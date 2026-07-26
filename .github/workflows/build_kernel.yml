@@ -51,11 +51,15 @@ jobs:
         chmod +x ./do_build.sh
         ./do_build.sh
 
+
+      KERN_VER=$(grep 'FK_VER=' floppy2100/build/ckbuild.sh | cut -d'"' -f2)
+      echo "KERN_VER=${KERN_VER}" >> $GITHUB_ENV
+      
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.model }}-${{ matrix.branch }}-${{ matrix.variant }}
-        path: flopy2100/build/Floppy_v1.1.2-${{ matrix.variant }}-${{ matrix.model }}-*.zip
+        name: Floppy_${{ env.KERN_VER }}-${{ matrix.model }}-${{ matrix.variant }}-${{ matrix.branch }}
+        path: flopy2100/build/Floppy_${{ env.KERN_VER }}-${{ matrix.variant }}-${{ matrix.model }}-*.zip
 
 
   release:
