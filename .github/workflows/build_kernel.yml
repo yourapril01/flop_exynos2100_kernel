@@ -22,44 +22,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - model: r9s
-            branch: rebased-11
-            variant: ksu
-          - model: r9s
-            branch: rebased-11
-            variant: susfs
-          - model: r9s
-            branch: rebased-11
-            variant: vanilla
-    
-          - model: o1s
-            branch: rebased-11
-            variant: ksu
-          - model: o1s
-            branch: rebased-11
-            variant: susfs
-          - model: o1s
-            branch: rebased-11
-            variant: vanilla
-    
-          - model: t2s
-            branch: rebased-11
-            variant: ksu
-          - model: t2s
-            branch: rebased-11
-            variant: susfs
-          - model: t2s
-            branch: rebased-11
-            variant: vanilla
-    
-          - model: p3s
-            branch: rebased-11
-            variant: ksu
-          - model: p3s
-            branch: rebased-11
-            variant: susfs
-          - model: p3s
-            branch: rebased-11
+          - model: exy2100
+            branch: Floppy_work
+            variant: KSUNext-SUSFS
+          - model: exy2100
+            branch: Floppy_work
+            variant: XXKSU
+          - model: exy2100
+            branch: Floppy_work
             variant: vanilla
     
     steps:
@@ -93,14 +63,14 @@ jobs:
 
     - name: Run kernel build
       run: |
-        chmod +x ./build.sh
-        ./build.sh -m ${{ matrix.model }} ${{ steps.vars.outputs.FLAGS }}
+        chmod +x ./do_build.sh
+        ./do_build.sh
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.model }}-${{ matrix.branch }}-${{ matrix.variant }}
-        path: build/out/${{ matrix.model }}/*.zip
+        path: build/out/Floppy_*.zip
 
 
   release:
