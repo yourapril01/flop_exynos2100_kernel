@@ -80,80 +80,19 @@ fi
 DROIDSPACES=1
 
 # Other variables
-DO_KSU=0
+DO_KSU=1
 DO_SUKI=0
-DO_XXKSU=0
-DO_CLEAN=0
-DO_MENUCONFIG=0
+DO_XXKSU=1
+DO_CLEAN=1
 IS_RELEASE=0
 DO_TG=0
 DO_BASHUP=0
 DO_REGEN=0
-DO_FLTO=0
-DO_QUIET=0
+DO_FLTO=1
+DO_QUIET=1
 DO_NHMOD=0
 DO_PERM=0
 DEFCONFIG=$DEFAULT_DEFCONFIG
-
-for arg in "$@"; do
-    if [[ "$arg" == *m* ]]; then
-        log_info "menuconfig argument passed, kernel configuration menu will be shown"
-        DO_MENUCONFIG=1
-    fi
-    if [[ "$arg" == *k* ]]; then
-        log_info "KernelSU argument passed, a KernelSU build will be made"
-        DO_KSU=1
-    fi
-    if [[ "$arg" == *s* ]]; then
-        log_info "ReSukiSU argument passed, a ReSukiSU build will be made"
-        DO_SUKI=1
-    fi
-    if [[ "$arg" == *x* ]]; then
-        log_info "XXKSU argument passed, an XXKSU build will be made"
-        DO_XXKSU=1
-    fi
-    if [[ "$arg" == *c* ]]; then
-        log_info "clean argument passed, output directory will be wiped"
-        DO_CLEAN=1
-    fi
-    if [[ "$arg" == *R* ]]; then
-        log_info "Release argument passed, build marked as release"
-        IS_RELEASE=1
-    fi
-    if [[ "$arg" == *t* ]]; then
-        if [ "$SECRETS" = "0" ]; then
-            log_warn "Telegram argument was passed, but secrets were not found. Skipping Telegram Upload"
-        else
-            log_info "Telegram argument passed, build will be uploaded to CI"
-            DO_TG=1
-        fi
-    fi
-    if [[ "$arg" == *b* ]]; then
-        log_info "bashupload.com argument passed, build will be uploaded to bashupload.com"
-        DO_BASHUP=1
-    fi
-    if [[ "$arg" == *r* ]]; then
-        log_info "config regeneration mode"
-        DO_REGEN=1
-    fi
-    if [[ "$arg" == *l* ]]; then
-        log_info "Full-LTO argument passed"
-        log_warn "Full-LTO is VERY resource heavy and may take a long time to compile"
-        DO_FLTO=1
-    fi
-    if [[ "$arg" == *q* ]]; then
-        log_info "Quiet argument passed"
-        log_warn "Only errors and warnings will be shown"
-        DO_QUIET=1
-    fi
-    if [[ "$arg" == *n* ]]; then
-        log_info "NetHunter module package argument passed"
-        DO_NHMOD=1
-    fi
-    if [[ "$arg" == *p* ]]; then
-        log_warn "Permissive packaging is not implemented in this basic Exynos 2100 build port. Ignoring 'p'."
-    fi
-done
 
 KSU_COUNT=0
 [ "$DO_KSU" = "1" ] && KSU_COUNT=$((KSU_COUNT + 1))
