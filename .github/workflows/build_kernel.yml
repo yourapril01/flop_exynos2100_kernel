@@ -55,7 +55,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.model }}-${{ matrix.branch }}-${{ matrix.variant }}
-        path: flopy2100/build/out/Floppy_v1.1.2-${{ matrix.variant }}-${{ matrix.model }}-*.zip
+        path: flopy2100/build/Floppy_v1.1.2-${{ matrix.variant }}-${{ matrix.model }}-*.zip
 
 
   release:
