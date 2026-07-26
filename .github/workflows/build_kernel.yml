@@ -21,9 +21,6 @@ jobs:
             variant: KSUNext-SUSFS
           - model: exynos2100
             branch: Floppy_work
-            variant: XXKSU
-          - model: exynos2100
-            branch: Floppy_work
             variant: vanilla
     
     steps:
