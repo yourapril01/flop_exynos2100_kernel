@@ -51,8 +51,7 @@ jobs:
         chmod +x ./do_build.sh
         ./do_build.sh
 
-
-      KERN_VER=$(grep 'FK_VER=' floppy2100/build/ckbuild.sh | cut -d'"' -f2)
+      KERN_VER=$(grep 'FK_VER=' build/ckbuild.sh | cut -d'"' -f2)
       echo "KERN_VER=${KERN_VER}" >> $GITHUB_ENV
       
     - name: Upload artifacts
