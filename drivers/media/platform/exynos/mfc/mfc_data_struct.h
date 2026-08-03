@@ -47,6 +47,10 @@
 #include <soc/samsung/sysevent.h>
 #include <soc/samsung/sysevent_notif.h>
 #endif
+#if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
+#include <linux/platform_data/sscoredump.h>
+#define CONFIG_MFC_USE_COREDUMP
+#endif
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
@@ -134,6 +138,14 @@ enum mfc_node_type {
 	MFCNODE_ENCODER_DRM = 3,
 	MFCNODE_ENCODER_OTF = 4,
 	MFCNODE_ENCODER_OTF_DRM = 5,
+};
+
+/**
+ * enum mfc_core_state - The type of MFC core device.
+ */
+enum mfc_core_state {
+	MFCCORE_INIT	= 0,
+	MFCCORE_ERROR	= 1,
 };
 
 /**
@@ -385,6 +397,18 @@ enum mfc_op_mode {
 	MFC_OP_SWITCH_BUT_MODE2		= 5,
 };
 
+/* Secure Protection */
+#define EXYNOS_SECBUF_VIDEO_FW_PROT_ID	2
+#define EXYNOS_SECBUF_PROT_ALIGNMENTS	0x10000
+
+struct buffer_smc_prot_info {
+	unsigned int chunk_count;
+	unsigned int dma_addr;
+	unsigned int protect_id;
+	unsigned int chunk_size;
+	unsigned long paddr;
+};
+
 enum mfc_real_time {
 	/* real-time */
 	MFC_RT                  = 0,
@@ -505,6 +529,7 @@ struct mfc_core_lock {
 struct mfc_pm {
 	struct clk	*clock;
 	atomic_t	pwr_ref;
+	atomic_t	protect_ref;
 	struct device	*device;
 	spinlock_t	clklock;
 
@@ -513,12 +538,21 @@ struct mfc_pm {
 	enum mfc_buf_usage_type base_type;
 };
 
+enum mfc_fw_status {
+	MFC_FW_NONE		= 0,
+	MFC_FW_ALLOC		= (1 << 0),	// 0x1
+	MFC_CTX_ALLOC		= (1 << 1),	// 0x2
+	MFC_FW_LOADED		= (1 << 2),	// 0x4
+	MFC_FW_VERIFIED		= (1 << 3),	// 0x8
+	MFC_FW_INITIALIZED	= (1 << 4),	// 0x10
+};
+
 struct mfc_fw {
-	int		date;
-	int		fimv_info;
-	size_t		fw_size;
-	int		status;
-	int		drm_status;
+	int			date;
+	int			fimv_info;
+	size_t			fw_size;
+	enum mfc_fw_status	status;
+	enum mfc_fw_status	drm_status;
 };
 
 struct mfc_ctx_buf_size {
@@ -584,7 +618,7 @@ enum mfc_get_img_size {
 	MFC_GET_RESOL_DPB_SIZE		= 1,
 };
 
-enum mfc_color_primaries {
+enum mfc_color_space {
 	MFC_COLORSPACE_UNSPECIFICED	= 0,
 	MFC_COLORSPACE_BT601		= 1,
 	MFC_COLORSPACE_BT709		= 2,
@@ -593,6 +627,18 @@ enum mfc_color_primaries {
 	MFC_COLORSPACE_BT2020		= 5,
 	MFC_COLORSPACE_RESERVED		= 6,
 	MFC_COLORSPACE_SRGB		= 7,
+};
+
+enum mfc_color_primaries {
+	MFC_PRIMARIES_RESERVED		= 0,
+	MFC_PRIMARIES_BT709_5		= 1,
+	MFC_PRIMARIES_UNSPECIFIED	= 2,
+	MFC_PRIMARIES_BT470_6M		= 4,
+	MFC_PRIMARIES_BT601_6_625	= 5,
+	MFC_PRIMARIES_BT601_6_525	= 6,
+	MFC_PRIMARIES_SMPTE_240M	= 7,
+	MFC_PRIMARIES_GENERIC_FILM	= 8,
+	MFC_PRIMARIES_BT2020		= 9,
 };
 
 enum mfc_transfer_characteristics {
@@ -615,6 +661,19 @@ enum mfc_transfer_characteristics {
 	MFC_TRANSFER_ST2084		= 16,
 	MFC_TRANSFER_ST428		= 17,
 	MFC_TRANSFER_HLG		= 18,
+};
+
+enum mfc_matrix_coeff {
+	MFC_MATRIX_COEFF_IDENTITY		= 0,
+	MFC_MATRIX_COEFF_REC709			= 1,
+	MFC_MATRIX_COEFF_UNSPECIFIED		= 2,
+	MFC_MATRIX_COEFF_RESERVED		= 3,
+	MFC_MATRIX_COEFF_470_SYSTEM_M		= 4,
+	MFC_MATRIX_COEFF_470_SYSTEM_BG		= 5,
+	MFC_MATRIX_COEFF_SMPTE170M		= 6,
+	MFC_MATRIX_COEFF_SMPTE240M		= 7,
+	MFC_MATRIX_COEFF_BT2020			= 9,
+	MFC_MATRIX_COEFF_BT2020_CONSTANT	= 10,
 };
 
 struct mfc_debugfs {
@@ -647,6 +706,7 @@ struct mfc_debugfs {
 	struct dentry *d_feature_option;
 	struct dentry *d_core_balance;
 	struct dentry *d_sbwc_disable;
+	struct dentry *d_sscd_report;
 
 	unsigned int debug_level;
 	unsigned int debug_ts;
@@ -669,6 +729,7 @@ struct mfc_debugfs {
 	unsigned int regression_option;
 	unsigned int core_balance;
 	unsigned int sbwc_disable;
+	unsigned int sscd_report;
 };
 
 /**
@@ -687,7 +748,9 @@ struct mfc_special_buf {
 	void				*vaddr;
 	size_t				size;
 	size_t				map_size;
+#if IS_ENABLED(CONFIG_ION_EXYNOS)
 	unsigned int			heapmask;
+#endif
 };
 
 struct mfc_mem {
@@ -794,6 +857,8 @@ struct mfc_platdata {
 	/* Default 10bit format for decoding and dithering for display */
 	unsigned int P010_decoding;
 	unsigned int dithering_enable;
+	unsigned int stride_align;
+	unsigned int stride_type;
 	/* Formats */
 	unsigned int support_10bit;
 	unsigned int support_422;
@@ -805,10 +870,12 @@ struct mfc_platdata {
 	unsigned int sbwc_dec_max_width;
 	unsigned int sbwc_dec_max_height;
 	unsigned int sbwc_dec_max_inst_num;
+	unsigned int sbwc_dec_hdr10_off;
 	/* HDR10+ */
 	unsigned int max_hdr_win;
 	/* error type for sync_point display */
 	unsigned int display_err_type;
+	unsigned int security_ctrl;
 	/* output buffer Q framerate */
 	unsigned int display_framerate;
 	/* NAL-Q size */
@@ -830,6 +897,8 @@ struct mfc_platdata {
 	struct mfc_feature wait_nalq_status;
 	struct mfc_feature drm_switch_predict;
 	struct mfc_feature sbwc_enc_src_ctrl;
+	struct mfc_feature average_qp;
+	struct mfc_feature mv_search_mode;
 	struct mfc_feature enc_idr_flag;
 	struct mfc_feature min_quality_mode;
 	struct mfc_feature enc_ts_delta;
@@ -842,6 +911,9 @@ struct mfc_platdata {
 	unsigned int enc_param_num;
 	unsigned int enc_param_addr[MFC_MAX_DEFAULT_PARAM];
 	unsigned int enc_param_val[MFC_MAX_DEFAULT_PARAM];
+
+	/* Encoder min bit count control */
+	unsigned int enc_min_bit_cnt;
 
 	struct mfc_bw_info mfc_bw_info;
 	struct mfc_bw_info mfc_bw_info_sbwc;
@@ -1175,8 +1247,10 @@ struct mfc_dev {
 	int num_core;
 	int fw_date;
 	size_t fw_base_offset;
+	size_t fw_rmem_offset;
 
 	struct device		*device;
+	struct device		*cache_op_dev;
 	struct v4l2_device	v4l2_dev;
 	struct video_device	*vfd_dec;
 	struct video_device	*vfd_enc;
@@ -1284,6 +1358,12 @@ struct mfc_core_ops {
 			struct mfc_ctx *ctx);
 };
 
+struct dump_info {
+	char		*name;
+	void            *addr;
+	u64             size;
+};
+
 struct mfc_core {
 	struct device		*device;
 	struct iommu_domain	*domain;
@@ -1308,6 +1388,8 @@ struct mfc_core {
 
 	struct mfc_variant	*variant;
 	struct mfc_core_platdata *core_pdata;
+
+	enum mfc_core_state state;
 
 	bool has_2sysmmu;
 	bool has_hwfc;
@@ -1337,6 +1419,9 @@ struct mfc_core {
 	struct mfc_special_buf	common_ctx_buf;
 	struct mfc_special_buf	drm_common_ctx_buf;
 	struct mfc_special_buf	dbg_info_buf;
+
+	/* Secure F/W prot information */
+	struct buffer_smc_prot_info *drm_fw_prot;
 
 	/* Context information */
 	struct mfc_dev *dev;
@@ -1414,6 +1499,9 @@ struct mfc_core {
 	int last_int;
 	struct timeval last_cmd_time;
 	struct timeval last_int_time;
+	/* debug info dump */
+	struct dump_info dbg_info;
+	struct platform_device *sscd_dev;
 
 	/* ITMON */
 #if IS_ENABLED(CONFIG_EXYNOS_ITMON)
@@ -1693,6 +1781,12 @@ struct mfc_enc_params {
 	u32 display_primaries_2;
 	u32 chroma_qp_offset_cb; /* H.264, HEVC */
 	u32 chroma_qp_offset_cr; /* H.264, HEVC */
+
+	u32 mv_search_mode;
+	u32 mv_hor_pos_l0;
+	u32 mv_hor_pos_l1;
+	u32 mv_ver_pos_l0;
+	u32 mv_ver_pos_l1;
 
 	union {
 		struct mfc_h264_enc_params h264;
@@ -1998,8 +2092,7 @@ struct mfc_dec {
 	int crc_luma1;
 	int crc_chroma1;
 
-	unsigned long consumed;
-	unsigned long remained_size;
+	unsigned int consumed;
 	dma_addr_t y_addr_for_pb;
 
 	int sei_parse;
@@ -2034,7 +2127,7 @@ struct mfc_dec {
 	unsigned int decoding_order;
 	unsigned int frame_display_delay;
 
-	unsigned int uncomp_pixfmt;
+	struct mfc_fmt *uncomp_fmt;
 
 	/* for Dynamic DPB */
 	struct dpb_table dpb[MFC_MAX_DPBS];
@@ -2093,6 +2186,7 @@ struct mfc_enc {
 
 	int stored_tag;
 	int roi_index;
+	int is_cbr_fix;
 	struct mfc_special_buf roi_buf[MFC_MAX_EXTRA_BUF];
 	struct mfc_enc_roi_info roi_info[MFC_MAX_EXTRA_BUF];
 
@@ -2148,12 +2242,12 @@ struct mfc_ctx {
 	int mb_width;
 	int mb_height;
 	int dpb_count;
-	int buf_stride;
 	int rgb_bpp;
 
 	int min_dpb_size[3];
 	int min_dpb_size_2bits[3];
 
+	int bytesperline[3];
 	struct mfc_raw_info raw_buf;
 
 	enum mfc_queue_state capture_state;

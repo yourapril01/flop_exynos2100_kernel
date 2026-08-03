@@ -247,7 +247,7 @@ static void is_vb2_dma_sg_unremap_attr(struct is_vb2_buf *vbuf, int attr)
 	atomic_inc(&stats.cnt_buf_unremap);
 }
 
-#ifdef CONFIG_DMA_BUF_CONTAINER
+#if IS_ENABLED(CONFIG_DMA_BUF_CONTAINER)
 static long is_dbufcon_prepare(struct is_vb2_buf *vbuf, struct device *dev)
 {
 	struct vb2_buffer *vb = &vbuf->vb.vb2_buf;
@@ -947,21 +947,21 @@ void is_mem_check_stats(struct is_mem *mem)
 		!= atomic_read(&mem->stats->cnt_dbuf_unmap);
 
 	if (unbalanced) {
-		dev_err(mem->default_ctx->dev,
+		dev_err(mem->dev,
 			"counters for memory OPs balanced!\n");
-		dev_err(mem->default_ctx->dev,
+		dev_err(mem->dev,
 			"\tplane_kmap: %ld, plane_kunmap: %ld\n",
 			atomic_read(&mem->stats->cnt_plane_kmap),
 			atomic_read(&mem->stats->cnt_plane_kunmap));
-		dev_err(mem->default_ctx->dev,
+		dev_err(mem->dev,
 			"\tbuf_remap: %ld, buf_unremap: %ld\n",
 			atomic_read(&mem->stats->cnt_buf_remap),
 			atomic_read(&mem->stats->cnt_buf_unremap));
-		dev_err(mem->default_ctx->dev,
+		dev_err(mem->dev,
 			"\tdbuf_prepare: %ld, dbuf_finish: %ld\n",
 			atomic_read(&mem->stats->cnt_dbuf_prepare),
 			atomic_read(&mem->stats->cnt_dbuf_finish));
-		dev_err(mem->default_ctx->dev,
+		dev_err(mem->dev,
 			"\tdbuf_map: %ld, dbuf_unmap: %ld\n",
 			atomic_read(&mem->stats->cnt_dbuf_map),
 			atomic_read(&mem->stats->cnt_dbuf_unmap));
@@ -979,10 +979,10 @@ int is_mem_init(struct is_mem *mem, struct platform_device *pdev)
 	mem->kmalloc = &is_kmalloc;
 #endif
 
-	mem->default_ctx = CALL_PTR_MEMOP(mem, init, pdev);
-	if (IS_ERR_OR_NULL(mem->default_ctx)) {
-		if (IS_ERR(mem->default_ctx))
-			return PTR_ERR(mem->default_ctx);
+	mem->priv = CALL_PTR_MEMOP(mem, init, pdev);
+	if (IS_ERR_OR_NULL(mem->priv)) {
+		if (IS_ERR(mem->priv))
+			return PTR_ERR(mem->priv);
 		else
 			return -EINVAL;
 	}

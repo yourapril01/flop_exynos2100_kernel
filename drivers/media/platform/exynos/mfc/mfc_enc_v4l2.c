@@ -16,6 +16,7 @@
 
 #include "mfc_core_otf.h"
 #include "mfc_sync.h"
+#include "mfc_llc.h"
 
 #include "mfc_qos.h"
 #include "mfc_queue.h"
@@ -68,30 +69,7 @@ static void __mfc_enc_uncomp_format(struct mfc_ctx *ctx)
 	u32 org_fmt = ctx->src_fmt->fourcc;
 	u32 uncomp_fmt = 0;
 
-	switch (org_fmt) {
-		case V4L2_PIX_FMT_NV12M_SBWC_8B:
-			uncomp_fmt = V4L2_PIX_FMT_NV12M;
-			break;
-		case V4L2_PIX_FMT_NV21M_SBWC_8B:
-			uncomp_fmt = V4L2_PIX_FMT_NV21M;
-			break;
-		case V4L2_PIX_FMT_NV12N_SBWC_8B:
-			uncomp_fmt = V4L2_PIX_FMT_NV12N;
-			break;
-		case V4L2_PIX_FMT_NV12M_SBWC_10B:
-			if (ctx->mem_type_10bit)
-				uncomp_fmt = V4L2_PIX_FMT_NV12M_P010;
-			else
-				uncomp_fmt = V4L2_PIX_FMT_NV12M_S10B;
-			break;
-		case V4L2_PIX_FMT_NV12N_SBWC_10B:
-			uncomp_fmt = V4L2_PIX_FMT_NV12N_10B;
-			break;
-		default:
-			mfc_ctx_err("[SBWC] Cannot find uncomp format: %d\n", org_fmt);
-			break;
-	}
-
+	uncomp_fmt = mfc_get_uncomp_format(ctx, org_fmt);
 	if (uncomp_fmt) {
 		enc->uncomp_fmt = __mfc_enc_find_format(ctx, uncomp_fmt);
 		if (enc->uncomp_fmt)
@@ -313,6 +291,7 @@ static void __mfc_enc_check_format(struct mfc_ctx *ctx)
 	ctx->is_422 = 0;
 	ctx->is_10bit = 0;
 	ctx->is_sbwc = 0;
+	ctx->rgb_bpp = 0;
 
 	switch (ctx->src_fmt->fourcc) {
 	case V4L2_PIX_FMT_NV16M_S10B:
@@ -330,6 +309,7 @@ static void __mfc_enc_check_format(struct mfc_ctx *ctx)
 		break;
 	case V4L2_PIX_FMT_NV12M_S10B:
 	case V4L2_PIX_FMT_NV12M_P010:
+	case V4L2_PIX_FMT_NV12N_P010:
 	case V4L2_PIX_FMT_NV21M_S10B:
 	case V4L2_PIX_FMT_NV21M_P010:
 		mfc_debug(2, "[FRAME][10BIT] is 10bit format\n");
@@ -359,11 +339,23 @@ static void __mfc_enc_check_format(struct mfc_ctx *ctx)
 		ctx->is_10bit = 1;
 		ctx->is_sbwc_lossy = 1;
 		break;
+	case V4L2_PIX_FMT_RGB24:
+		ctx->rgb_bpp = 24;
+		break;
+	case V4L2_PIX_FMT_RGB565:
+		ctx->rgb_bpp = 16;
+		break;
+	case V4L2_PIX_FMT_RGB32X:
+	case V4L2_PIX_FMT_BGR32:
+	case V4L2_PIX_FMT_ARGB32:
+	case V4L2_PIX_FMT_RGB32:
+		ctx->rgb_bpp = 32;
+		break;
 	default:
 		break;
 	}
-	mfc_debug(2, "[FRAME] 10bit: %d, 422: %d, sbwc: %d lossy: %d\n",
-			ctx->is_10bit, ctx->is_422, ctx->is_sbwc, ctx->is_sbwc_lossy);
+	mfc_debug(2, "[FRAME] 10bit: %d, 422: %d, rgb: %d, sbwc: %d lossy: %d\n",
+			ctx->is_10bit, ctx->is_422, ctx->rgb_bpp, ctx->is_sbwc, ctx->is_sbwc_lossy);
 }
 
 static int __mfc_enc_check_resolution(struct mfc_ctx *ctx)
@@ -527,8 +519,10 @@ static int mfc_enc_s_fmt_vid_cap_mplane(struct file *file, void *priv,
 	pix_fmt_mp->plane_fmt[0].bytesperline = 0;
 
 	ret = mfc_rm_instance_open(dev, ctx);
-	if (ret)
+	if (ret) {
 		mfc_ctx_err("Failed to instance open\n");
+		return ret;
+	}
 
 	mfc_debug_leave();
 	return ret;
@@ -576,6 +570,8 @@ static int mfc_enc_s_fmt_vid_out_mplane(struct file *file, void *priv,
 	struct mfc_fmt *prev_src_fmt = NULL;
 	struct mfc_fmt *fmt = NULL;
 	unsigned int fps;
+	int ret = 0;
+	int i;
 
 	mfc_debug_enter();
 
@@ -607,11 +603,13 @@ static int mfc_enc_s_fmt_vid_out_mplane(struct file *file, void *priv,
 	ctx->raw_buf.num_planes = ctx->src_fmt->num_planes;
 	ctx->img_width = pix_fmt_mp->width;
 	ctx->img_height = pix_fmt_mp->height;
-	ctx->buf_stride = pix_fmt_mp->plane_fmt[0].bytesperline;
 	ctx->mb_width = WIDTH_MB(ctx->img_width);
 	ctx->mb_height = HEIGHT_MB(ctx->img_height);
 	fps = MFC_MIN_FPS / 1000;
 	ctx->weighted_mb = ctx->mb_width * ctx->mb_height * fps;
+
+	for (i = 0; i < ctx->src_fmt->mem_planes; i++)
+		ctx->bytesperline[i] = pix_fmt_mp->plane_fmt[i].bytesperline;
 
 	__mfc_enc_check_format(ctx);
 
@@ -630,11 +628,24 @@ static int mfc_enc_s_fmt_vid_out_mplane(struct file *file, void *priv,
 					prev_src_fmt->name, ctx->src_fmt->name);
 		else
 			mfc_ctx_info("[DRC] Enc Dynamic Resolution Changed\n");
+
+		if (core_ctx->codec_buffer_allocated) {
+			mfc_debug(2, "[DRC] Release previous codec buffer\n");
+
+			if (core->has_llc && core->llc_on_status)
+				mfc_llc_flush(core);
+
+			mfc_release_codec_buffers(core_ctx);
+			ret = mfc_alloc_codec_buffers(core_ctx);
+			if (ret)
+				mfc_err("[DRC] Failed to allocate encoding buffers\n");
+		}
 	}
 
 	mfc_ctx_info("[FRAME] enc src pixelformat : %s\n", ctx->src_fmt->name);
-	mfc_ctx_info("[FRAME] resolution w: %d, h: %d, stride: %d (mb: %lld)\n",
-			pix_fmt_mp->width, pix_fmt_mp->height, ctx->buf_stride, ctx->weighted_mb);
+	mfc_ctx_info("[FRAME] resolution w: %d, h: %d, Y stride: %d, C stride: %d (mb: %ld)\n",
+			pix_fmt_mp->width, pix_fmt_mp->height,
+			ctx->bytesperline[0], ctx->bytesperline[1], ctx->weighted_mb);
 
 	/*
 	 * It should be keep till buffer size and stride was calculated.
@@ -1070,6 +1081,12 @@ static int __mfc_enc_ext_info(struct mfc_ctx *ctx)
 	if (core->core_pdata->gdc_votf_base)
 		val |= ENC_SET_GDC_VOTF;
 
+	if (MFC_FEATURE_SUPPORT(dev, dev->pdata->average_qp))
+		val |= ENC_SET_AVERAGE_QP;
+
+	if (MFC_FEATURE_SUPPORT(dev, dev->pdata->mv_search_mode))
+		val |= ENC_SET_MV_SEARCH_MODE;
+
 	mfc_debug(5, "[CTRLS] ext info val: %#x\n", val);
 
 	return val;
@@ -1102,6 +1119,7 @@ static int __mfc_enc_get_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 	case V4L2_CID_MPEG_MFC51_VIDEO_FRAME_STATUS:
 	case V4L2_CID_MPEG_VIDEO_SRC_BUF_FLAG:
 	case V4L2_CID_MPEG_VIDEO_DST_BUF_FLAG:
+	case V4L2_CID_MPEG_VIDEO_AVERAGE_QP:
 		list_for_each_entry(ctx_ctrl, &ctx->ctrls, list) {
 			if (!(ctx_ctrl->type & MFC_CTRL_TYPE_GET))
 				continue;
@@ -2026,6 +2044,21 @@ static int __mfc_enc_set_param(struct mfc_ctx *ctx, struct v4l2_control *ctrl)
 		mfc_rm_update_real_time(ctx);
 		mfc_debug(2, "[QoS] user set the operating frame rate: %d\n", ctrl->value);
 		break;
+	case V4L2_CID_MPEG_VIDEO_MV_SEARCH_MODE:
+		p->mv_search_mode = ctrl->value;
+		break;
+	case V4L2_CID_MPEG_VIDEO_MV_HOR_POSITION_L0:
+		p->mv_hor_pos_l0 = ctrl->value;
+		break;
+	case V4L2_CID_MPEG_VIDEO_MV_HOR_POSITION_L1:
+		p->mv_hor_pos_l1 = ctrl->value;
+		break;
+	case V4L2_CID_MPEG_VIDEO_MV_VER_POSITION_L0:
+		p->mv_ver_pos_l0 = ctrl->value;
+		break;
+	case V4L2_CID_MPEG_VIDEO_MV_VER_POSITION_L1:
+		p->mv_ver_pos_l1 = ctrl->value;
+		break;
 	case V4L2_CID_MPEG_VIDEO_GOP_CTRL:
 		p->gop_ctrl = ctrl->value;
 		break;
@@ -2123,6 +2156,10 @@ static int __mfc_enc_set_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 	case V4L2_CID_MPEG_VIDEO_YSUM:
 	case V4L2_CID_MPEG_VIDEO_RATIO_OF_INTRA:
 	case V4L2_CID_MPEG_VIDEO_DROP_CONTROL:
+	case V4L2_CID_MPEG_VIDEO_MV_HOR_POSITION_L0:
+	case V4L2_CID_MPEG_VIDEO_MV_HOR_POSITION_L1:
+	case V4L2_CID_MPEG_VIDEO_MV_VER_POSITION_L0:
+	case V4L2_CID_MPEG_VIDEO_MV_VER_POSITION_L1:
 	case V4L2_CID_MPEG_VIDEO_SRC_BUF_FLAG:
 	case V4L2_CID_MPEG_VIDEO_DST_BUF_FLAG:
 		list_for_each_entry(ctx_ctrl, &ctx->ctrls, list) {
@@ -2152,7 +2189,9 @@ static int __mfc_enc_set_ctrl_val(struct mfc_ctx *ctx, struct v4l2_control *ctrl
 				}
 				if (ctx_ctrl->id == V4L2_CID_MPEG_MFC51_VIDEO_I_PERIOD_CH &&
 						p->i_frm_ctrl_mode) {
-					ctx_ctrl->set.val = ctx_ctrl->set.val * (p->num_b_frame + 1);
+					if (!p->gop_ctrl)
+						ctx_ctrl->set.val = ctx_ctrl->set.val *
+							(p->num_b_frame + 1);
 					if (ctx_ctrl->set.val >= 0x3FFFFFFF) {
 						mfc_ctx_info("I frame interval is bigger than max: %d\n",
 								ctx_ctrl->set.val);

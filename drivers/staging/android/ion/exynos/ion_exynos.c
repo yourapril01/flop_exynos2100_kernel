@@ -17,6 +17,7 @@
 #include <linux/seq_file.h>
 #include <linux/dma-noncoherent.h>
 #include <linux/iommu.h>
+#include <linux/workarounds.h>
 #include <uapi/linux/dma-buf.h>
 
 #include "ion_exynos.h"
@@ -82,6 +83,7 @@ unsigned int ion_get_heapmask_by_name(const char *heap_name)
 
 	return 1 << data[i].heap_id;
 }
+EXPORT_SYMBOL_GPL(ion_get_heapmask_by_name);
 
 static inline bool ion_buffer_cached(struct ion_buffer *buffer)
 {
@@ -645,6 +647,11 @@ const struct dma_buf_ops exynos_dma_buf_ops = {
 static int __init ion_exynos_init(void)
 {
 	int ret;
+
+	if (is_dma_buf_env()) {
+		pr_info("FK_FEATURE_ENABLE_DMA_BUF is enabled so ION Exynos can't probe\n");
+		return 0;
+	}
 
 	ret = ion_secure_iova_pool_create();
 	if (ret)

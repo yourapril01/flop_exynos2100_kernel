@@ -57,6 +57,25 @@
 
 struct _mfc_trace_logging g_mfc_core_trace_logging[MFC_TRACE_LOG_COUNT_MAX];
 
+#ifdef CONFIG_MFC_USE_COREDUMP
+static struct sscd_platform_data mfc_core_sscd_platdata;
+
+static void mfc_core_sscd_release(struct device *dev)
+{
+	dev_info(dev, "%s: sscd_dev is released\n", __func__);
+}
+
+static struct platform_device mfc_core_sscd_dev = {
+	.name            = MFC_CORE_NAME,
+	.driver_override = SSCD_NAME,
+	.id              = -1,
+	.dev             = {
+		.platform_data = &mfc_core_sscd_platdata,
+		.release       = mfc_core_sscd_release,
+	},
+};
+#endif
+
 void mfc_core_butler_worker(struct work_struct *work)
 {
 	struct mfc_core *core;
@@ -108,6 +127,7 @@ int mfc_core_sysmmu_fault_handler(struct iommu_fault *fault, void *param)
 {
 	struct mfc_core *core = (struct mfc_core *)param;
 	unsigned int trans_info;
+	int ret;
 
 	if (core->core_pdata->trans_info_offset)
 		trans_info = core->core_pdata->trans_info_offset;
@@ -154,12 +174,26 @@ int mfc_core_sysmmu_fault_handler(struct iommu_fault *fault, void *param)
 	}
 	core->logging_data->fault_addr = (unsigned int)(fault->event.addr);
 
-	mfc_core_err("MFC-%d SysMMU PAGE FAULT at %#lx\n",
-			core->id, (unsigned int)(fault->event.addr));
+	mfc_core_err("MFC-%d SysMMU PAGE FAULT at %#lx (AxID: %#x)\n",
+			core->id, (unsigned int)(fault->event.addr), core->logging_data->fault_trans_info);
+	MFC_TRACE_CORE("MFC-%d SysMMU PAGE FAULT at %#lx (AxID: %#x)\n",
+			core->id, (unsigned int)(fault->event.addr), core->logging_data->fault_trans_info);
 
-	call_dop(core, dump_and_stop_always, core);
+	call_dop(core, dump_and_stop_debug_mode, core);
 
-	return 0;
+	/*
+	 * if return 0, sysmmu occurs kernel panic for debugging
+	 * if -EAGAIN, sysmmu doesn't occur kernel panic (but need async-fault in dt).
+	 */
+	if (!core->dev->pdata->debug_mode &&
+			!core->dev->debugfs.debug_mode_en) {
+		mfc_core_handle_error(core);
+		ret = -EAGAIN;
+	} else {
+		ret = 0;
+	}
+
+	return ret;
 }
 
 static int __mfc_core_parse_dt(struct device_node *np, struct mfc_core *core)
@@ -191,8 +225,6 @@ static int __mfc_core_parse_dt(struct device_node *np, struct mfc_core *core)
 	of_property_read_u32(np, "mfc_votf_base", &pdata->mfc_votf_base);
 	of_property_read_u32(np, "gdc_votf_base", &pdata->gdc_votf_base);
 	of_property_read_u32(np, "dpu_votf_base", &pdata->dpu_votf_base);
-	of_property_read_u32(np, "votf_start_offset", &pdata->votf_start_offset);
-	of_property_read_u32(np, "votf_end_offset", &pdata->votf_end_offset);
 
 	/* QoS */
 	of_property_read_u32(np, "num_default_qos_steps",
@@ -404,7 +436,7 @@ static int __mfc_itmon_notifier(struct notifier_block *nb, unsigned long action,
 {
 	struct mfc_core *core;
 	struct itmon_notifier *itmon_info = nb_data;
-	int is_mfc_itmon = 0, is_master = 0;
+	int is_mfc_itmon = 0, is_client = 0;
 	int ret = NOTIFY_OK;
 
 	core = container_of(nb, struct mfc_core, itmon_nb);
@@ -417,29 +449,29 @@ static int __mfc_itmon_notifier(struct notifier_block *nb, unsigned long action,
 		if (itmon_info->port &&
 			strncmp(core->name, itmon_info->port, sizeof(core->name) - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 1;
+			is_client = 1;
 		} else if (itmon_info->master &&
 			strncmp(core->name, itmon_info->master, sizeof(core->name) - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 1;
+			is_client = 1;
 		} else if (itmon_info->dest &&
 			strncmp(core->name, itmon_info->dest, sizeof(core->name) - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 0;
+			is_client = 0;
 		}
 	} else {
 		if (itmon_info->port &&
 				strncmp("MFC", itmon_info->port, sizeof("MFC") - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 1;
+			is_client = 1;
 		} else if (itmon_info->master &&
 				strncmp("MFC", itmon_info->master, sizeof("MFC") - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 1;
+			is_client = 1;
 		} else if (itmon_info->dest &&
 				strncmp("MFC", itmon_info->dest, sizeof("MFC") - 1) == 0) {
 			is_mfc_itmon = 1;
-			is_master = 0;
+			is_client = 0;
 		}
 	}
 
@@ -447,10 +479,10 @@ static int __mfc_itmon_notifier(struct notifier_block *nb, unsigned long action,
 		return ret;
 
 	dev_err(core->device, "mfc_itmon_notifier: +\n");
-	dev_err(core->device, "MFC is %s\n", is_master ? "master" : "dest");
+	dev_err(core->device, "MFC is %s\n", is_client ? "client" : "dest");
 	if (!core->itmon_notified) {
 		dev_err(core->device, "dump MFC information\n");
-		if (is_master || (!is_master && itmon_info->onoff))
+		if (is_client || (!is_client && itmon_info->onoff))
 			call_dop(core, dump_and_stop_always, core);
 		else
 			call_dop(core, dump_info_without_regs, core);
@@ -633,24 +665,11 @@ static int mfc_core_probe(struct platform_device *pdev)
 
 	/* vOTF 1:1 mapping */
 	core->domain = iommu_get_domain_for_dev(core->device);
-	if (core->core_pdata->gdc_votf_base) {
-		ret = mfc_map_votf_sfr(core, core->core_pdata->gdc_votf_base);
+	if (core->core_pdata->gdc_votf_base || core->core_pdata->dpu_votf_base) {
+		ret = mfc_iommu_map_sfr(core);
 		if (ret) {
-			core->has_gdc_votf = 0;
-			dev_err(&pdev->dev, "failed to map GDC vOTF SFR\n");
-			goto err_gdc_votf;
-		} else {
-			core->has_gdc_votf = 1;
-		}
-	}
-	if (core->core_pdata->dpu_votf_base) {
-		ret = mfc_map_votf_sfr(core, core->core_pdata->dpu_votf_base);
-		if (ret) {
-			core->has_dpu_votf = 0;
-			dev_err(&pdev->dev, "failed to map DPU vOTF SFR\n");
-			goto err_dpu_votf;
-		} else {
-			core->has_dpu_votf = 1;
+			dev_err(&pdev->dev, "failed to map vOTF SFR\n");
+			goto err_alloc_debug;
 		}
 	}
 
@@ -675,17 +694,24 @@ static int mfc_core_probe(struct platform_device *pdev)
 	sysevent_notif_register_notifier(core->sysevent_desc.name, &mfc_core_nb);
 #endif
 
+#ifdef CONFIG_MFC_USE_COREDUMP
+	if (platform_device_register(&mfc_core_sscd_dev)) {
+		dev_err(&pdev->dev, "failed to register sscd_dev\n");
+	} else {
+		core->sscd_dev = &mfc_core_sscd_dev;
+
+		core->dbg_info.size = MFC_DUMP_BUF_SIZE;
+		core->dbg_info.addr = vmalloc(core->dbg_info.size);
+		if (!core->dbg_info.addr)
+			dev_err(&pdev->dev, "failed to alloc for debug buffer\n");
+	}
+#endif
+
 	dev_info(&pdev->dev, "%s is completed\n", __func__);
 
 	return 0;
 
 err_alloc_debug:
-	if (core->has_dpu_votf)
-		mfc_unmap_votf_sfr(core, core->core_pdata->dpu_votf_base);
-err_dpu_votf:
-	if (core->has_gdc_votf)
-		mfc_unmap_votf_sfr(core, core->core_pdata->gdc_votf_base);
-err_gdc_votf:
 	iommu_unregister_device_fault_handler(&pdev->dev);
 err_sysmmu_fault_handler:
 	destroy_workqueue(core->butler_wq);
@@ -724,7 +750,11 @@ static int mfc_core_remove(struct platform_device *pdev)
 	struct mfc_core *core = platform_get_drvdata(pdev);
 
 	dev_dbg(&pdev->dev, "%s++\n", __func__);
-
+	if (core->dbg_info.addr)
+		vfree(core->dbg_info.addr);
+#ifdef CONFIG_MFC_USE_COREDUMP
+	platform_device_unregister(&mfc_core_sscd_dev);
+#endif
 	iommu_unregister_device_fault_handler(&pdev->dev);
 	if (timer_pending(&core->meerkat_timer))
 		del_timer(&core->meerkat_timer);
@@ -749,7 +779,6 @@ static int mfc_core_remove(struct platform_device *pdev)
 #if IS_ENABLED(CONFIG_EXYNOS_IMGLOADER)
 	imgloader_desc_release(&core->mfc_imgloader_desc);
 #endif
-	kfree(core);
 
 	dev_dbg(&pdev->dev, "%s--\n", __func__);
 	return 0;

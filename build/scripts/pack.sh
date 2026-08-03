@@ -53,10 +53,20 @@ packing() {
 
             cd "$AK3_DIR"
 
-            rm -f boot.img dtb dtb.img Image* zImage*
+            rm -f boot.img dtb dtb.img Image* zImage* dtbo*.img
 
             cp -f "$OUT_VENDORBOOTIMG" vendor_boot.img
             cp -f "$OUT_KERNEL" .
+
+            local c
+            for c in "r9s" "o1s" "p3s" "t2s"; do
+                if [ -f "$IMAGES_DIR/dtbo_${c}.img" ]; then
+                    cp -f "$IMAGES_DIR/dtbo_${c}.img" "./dtbo_${c}.img"
+                else
+                    log_warn "DTBO image dtbo_${c}.img not found in $IMAGES_DIR"
+                fi
+            done
+
             rm -f "$ZIP_PATH"
             zip -r9 -q "$ZIP_PATH" . -x .git\* .github\* README.md
             cd "$KDIR"
@@ -70,8 +80,25 @@ packing() {
         echo -e "\n$(log_info "Building TAR packages...")"
         cd "$TMPDIR"
 
+        # Individual DTBO TARs
+        local COMMIT_HASH
+        COMMIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+        local codenames=("r9s" "o1s" "p3s" "t2s")
+        local c
+        for c in "${codenames[@]}"; do
+            local dtbo_img="$IMAGES_DIR/dtbo_${c}.img"
+            if [ -f "$dtbo_img" ]; then
+                local dtbo_tar="$KDIR/build/Floppy-DTBO-${c}-${COMMIT_HASH}-${DATE}.tar"
+                rm -f "$dtbo_tar"
+                lz4 -c -12 -B6 --content-size "$dtbo_img" > dtbo.img.lz4 2>/dev/null
+                tar -cf "$dtbo_tar" dtbo.img.lz4
+                rm -f dtbo.img.lz4
+                echo -e "$(log_info "Created DTBO TAR for ${c}: ${dtbo_tar}")"
+            fi
+        done
+
         # OneUI TAR
-        echo -e "$(log_info "Creating OneUI TAR...")"
+        echo -e "\n$(log_info "Creating OneUI TAR...")"
         rm -f "$TAR_PATH_ONEUI"
         lz4 -c -12 -B6 --content-size "$OUT_BOOTIMG_ONEUI" > boot.img.lz4 2>/dev/null
         lz4 -c -12 -B6 --content-size "$OUT_VENDORBOOTIMG" > vendor_boot.img.lz4 2>/dev/null

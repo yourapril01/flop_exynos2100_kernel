@@ -260,7 +260,7 @@ static nal_queue_in_handle* __mfc_core_nal_q_create_in_q(struct mfc_core *core,
 	 * Plus 1 is needed for margin, because F/W exceeds sometimes.
 	 */
 	nal_q_in_handle->in_buf.size = core->dev->pdata->nal_q_entry_size * (NAL_Q_QUEUE_SIZE + 1);
-	if (mfc_mem_ion_alloc(core->dev, &nal_q_in_handle->in_buf)) {
+	if (mfc_mem_special_buf_alloc(core->dev, &nal_q_in_handle->in_buf)) {
 		mfc_core_err("[NALQ] failed to get memory\n");
 		kfree(nal_q_in_handle);
 		return NULL;
@@ -295,7 +295,7 @@ static nal_queue_out_handle* __mfc_core_nal_q_create_out_q(struct mfc_core *core
 	 * Plus 1 is needed for margin, because F/W exceeds sometimes.
 	 */
 	nal_q_out_handle->out_buf.size = core->dev->pdata->nal_q_entry_size * (NAL_Q_QUEUE_SIZE + 1);
-	if (mfc_mem_ion_alloc(core->dev, &nal_q_out_handle->out_buf)) {
+	if (mfc_mem_special_buf_alloc(core->dev, &nal_q_out_handle->out_buf)) {
 		mfc_core_err("[NALQ] failed to get memory\n");
 		kfree(nal_q_out_handle);
 		return NULL;
@@ -314,7 +314,7 @@ static void __mfc_core_nal_q_destroy_in_q(struct mfc_core *core,
 	mfc_core_debug_enter();
 
 	if (nal_q_in_handle) {
-		mfc_mem_ion_free(&nal_q_in_handle->in_buf);
+		mfc_mem_special_buf_free(core->dev, &nal_q_in_handle->in_buf);
 		kfree(nal_q_in_handle);
 	}
 
@@ -327,7 +327,7 @@ static void __mfc_core_nal_q_destroy_out_q(struct mfc_core *core,
 	mfc_core_debug_enter();
 
 	if (nal_q_out_handle) {
-		mfc_mem_ion_free(&nal_q_out_handle->out_buf);
+		mfc_mem_special_buf_free(core->dev, &nal_q_out_handle->out_buf);
 		kfree(nal_q_out_handle);
 	}
 
@@ -466,7 +466,6 @@ void mfc_core_nal_q_start(struct mfc_core *core, nal_queue_handle *nal_q_handle)
 	MFC_TRACE_CORE("** NAL Q state : %d\n", nal_q_handle->nal_q_state);
 	mfc_core_debug(2, "[NALQ] started, state = %d\n", nal_q_handle->nal_q_state);
 
-	MFC_CORE_WRITEL(MFC_TIMEOUT_VALUE, MFC_REG_TIMEOUT_VALUE);
 	mfc_core_cmd_host2risc(core, MFC_REG_H2R_CMD_NAL_QUEUE);
 
 	mfc_core_debug_leave();
@@ -562,6 +561,18 @@ void mfc_core_nal_q_cleanup_queue(struct mfc_core *core)
 	mfc_core_debug_leave();
 
 	return;
+}
+
+static void __mfc_core_nal_q_set_min_bit_count(struct mfc_ctx *ctx, EncoderInputStr *pInStr)
+{
+	struct mfc_enc *enc = ctx->enc_priv;
+	struct mfc_enc_params *p = &enc->params;
+
+	pInStr->BitCountEnable &= ~0x1;
+	pInStr->BitCountEnable |= 0x1;
+
+	if (p->rc_framerate)
+		pInStr->MinBitCount = (3500 * 30) / p->rc_framerate;
 }
 
 static void __mfc_core_nal_q_set_slice_mode(struct mfc_ctx *ctx, EncoderInputStr *pInStr)
@@ -985,6 +996,7 @@ static int __mfc_core_nal_q_run_in_buf_enc(struct mfc_core *core, struct mfc_cor
 	dma_addr_t addr_2bit[2] = {0, 0};
 	unsigned int index, i;
 	int is_uncomp = 0;
+	u32 timeout_value = MFC_TIMEOUT_VALUE;
 
 	mfc_debug_enter();
 
@@ -1093,7 +1105,8 @@ static int __mfc_core_nal_q_run_in_buf_enc(struct mfc_core *core, struct mfc_cor
 			pInStr->ParamChange |= (MFC_ENC_SRC_SBWC_ON << 14);
 		}
 
-		mfc_set_linear_stride_size(ctx, (is_uncomp ? enc->uncomp_fmt : ctx->src_fmt));
+		mfc_set_linear_stride_size(ctx, &ctx->raw_buf,
+				(is_uncomp ? enc->uncomp_fmt : ctx->src_fmt));
 
 		for (i = 0; i < raw->num_planes; i++) {
 			pInStr->SourcePlaneStride[i] = raw->stride[i];
@@ -1151,9 +1164,17 @@ static int __mfc_core_nal_q_run_in_buf_enc(struct mfc_core *core, struct mfc_cor
 	mfc_debug(2, "[NALQ] input queue, dst_buf_queue -> dst_buf_nal_queue, index:%d\n",
 			dst_mb->vb.vb2_buf.index);
 
+	if (enc->is_cbr_fix && dev->pdata->enc_min_bit_cnt)
+		__mfc_core_nal_q_set_min_bit_count(ctx, pInStr);
 	__mfc_core_nal_q_set_slice_mode(ctx, pInStr);
 	__mfc_core_nal_q_set_enc_config_qp(ctx, pInStr);
 	__mfc_core_nal_q_set_enc_ts_delta(ctx, pInStr);
+
+	if (core->last_mfc_freq)
+		timeout_value = (core->last_mfc_freq * MFC_TIMEOUT_VALUE_IN_MSEC);
+	mfc_debug(2, "[NALQ] Last MFC Freq: %d, Timeout Value: %d\n",
+			core->last_mfc_freq, timeout_value);
+	MFC_CORE_WRITEL(timeout_value, MFC_REG_TIMEOUT_VALUE);
 
 	mfc_debug_leave();
 
@@ -1168,12 +1189,13 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct mfc_raw_info *raw = &ctx->raw_buf;
 	dma_addr_t buf_addr;
-	unsigned int strm_size;
+	unsigned int strm_size, offset;
 	unsigned int cpb_buf_size;
 	size_t dbuf_size;
 	struct vb2_buffer *vb;
 	int src_index, dst_index;
 	int i;
+	u32 timeout_value = MFC_TIMEOUT_VALUE;
 
 	mfc_debug_enter();
 
@@ -1211,7 +1233,8 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 	vb = &src_mb->vb.vb2_buf;
 	src_index = vb->index;
 	buf_addr = src_mb->addr[0][0];
-	strm_size = vb->planes[0].bytesused;
+	strm_size = mfc_dec_get_strm_size(ctx, src_mb);
+	offset = mfc_dec_get_strm_offset(ctx, src_mb);
 	dbuf_size = vb->planes[0].dbuf->size;
 	cpb_buf_size = ALIGN(strm_size + 511, STREAM_BUF_ALIGN);
 
@@ -1223,8 +1246,8 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 
 	mfc_debug(2, "[NALQ][BUFINFO] ctx[%d] set src index: %d, addr: 0x%08llx\n",
 			ctx->num, src_index, buf_addr);
-	mfc_debug(2, "[NALQ][STREAM] strm_size: %#x(%d), buf_size: %u\n",
-			strm_size, strm_size, cpb_buf_size);
+	mfc_debug(2, "[NALQ][STREAM] strm_size: %#x(%d), offset: %d, buf_size: %u\n",
+			strm_size, strm_size, offset, cpb_buf_size);
 
 	if (strm_size == 0)
 		mfc_ctx_info("stream size is 0\n");
@@ -1232,7 +1255,7 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 	pInStr->StreamDataSize = strm_size;
 	pInStr->CpbBufferAddr = buf_addr;
 	pInStr->CpbBufferSize = cpb_buf_size;
-	pInStr->CpbBufferOffset = 0;
+	pInStr->CpbBufferOffset = offset;
 	ctx->last_src_addr = buf_addr;
 
 	/* dst buffer setting */
@@ -1272,6 +1295,12 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 	MFC_TRACE_CTX("Set dst[%d] fd: %d, %#llx / used %#lx\n",
 			dst_index, dst_mb->vb.vb2_buf.planes[0].m.fd,
 			dst_mb->addr[0][0], dec->dynamic_used);
+
+	if (core->last_mfc_freq)
+		timeout_value = (core->last_mfc_freq * MFC_TIMEOUT_VALUE_IN_MSEC);
+	mfc_debug(2, "[NALQ] Last MFC Freq: %d, Timeout Value: %d\n",
+			core->last_mfc_freq, timeout_value);
+	MFC_CORE_WRITEL(timeout_value, MFC_REG_TIMEOUT_VALUE);
 
 	mfc_debug_leave();
 
@@ -2128,7 +2157,7 @@ static void __mfc_core_nal_q_handle_frame_input(struct mfc_core *core, struct mf
 	struct mfc_buf *src_mb;
 	unsigned int index;
 	int deleted = 0;
-	unsigned long consumed;
+	unsigned int consumed;
 	unsigned int dst_frame_status;
 
 	/* If there is consumed byte, it is abnormal status,
@@ -2161,16 +2190,14 @@ static void __mfc_core_nal_q_handle_frame_input(struct mfc_core *core, struct mf
 		if (CODEC_MULTIFRAME(ctx))
 			dec->y_addr_for_pb = (dma_addr_t)pOutStr->DecodedAddr[0];
 
-		dec->consumed = consumed;
-		dec->remained_size = src_mb->vb.vb2_buf.planes[0].bytesused
-			- dec->consumed;
+		dec->consumed += consumed;
 		dec->has_multiframe = 1;
 		dec->is_multiframe = 1;
 		core->nal_q_stop_cause |= (1 << NALQ_EXCEPTION_MULTI_FRAME);
 		core->nal_q_handle->nal_q_exception = 1;
 
-		MFC_TRACE_CTX("** consumed:%ld, remained:%ld, addr:0x%08llx\n",
-			dec->consumed, dec->remained_size, dec->y_addr_for_pb);
+		MFC_TRACE_CTX("** consumed:%d, remained:%d, addr:0x%08llx\n",
+			dec->consumed, mfc_dec_get_strm_size(ctx, src_mb), dec->y_addr_for_pb);
 		/* Do not move src buffer to done_list */
 		return;
 	}
@@ -2230,8 +2257,8 @@ static void __mfc_core_nal_q_handle_frame_input(struct mfc_core *core, struct mf
 		mfc_ctx_err("[NALQ] failed in get_buf_ctrls_val\n");
 
 	dec->consumed = 0;
-	dec->has_multiframe = 0;
-	dec->remained_size = 0;
+	if (IS_VP9_DEC(ctx) || IS_AV1_DEC(ctx))
+		dec->has_multiframe = 0;
 
 	vb2_buffer_done(&src_mb->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
@@ -2299,7 +2326,7 @@ void __mfc_core_nal_q_handle_frame(struct mfc_core *core, struct mfc_core_ctx *c
 		goto leave_handle_frame;
 	}
 	if (need_empty_dpb) {
-		mfc_debug(2, "[NALQ][MULTIFRAME] There is multi-frame. consumed:%ld\n", dec->consumed);
+		mfc_debug(2, "[NALQ][MULTIFRAME] There is multi-frame. consumed:%d\n", dec->consumed);
 		dec->has_multiframe = 1;
 		core->nal_q_stop_cause |= (1 << NALQ_EXCEPTION_NEED_DPB);
 		core->nal_q_handle->nal_q_exception = 1;
@@ -2408,6 +2435,9 @@ void __mfc_core_nal_q_handle_frame(struct mfc_core *core, struct mfc_core_ctx *c
 			mfc_debug(2, "[NALQ][REFINFO] Released FD = %d will update with display buffer\n",
 					dec->ref_buf[i].fd[0]);
 	}
+
+	if (core->dev->debugfs.sscd_report && (ctx->frame_cnt == 200))
+		call_dop(core, dump_and_stop_debug_mode, core);
 
 leave_handle_frame:
 	if (core->nal_q_handle->nal_q_exception == 2)

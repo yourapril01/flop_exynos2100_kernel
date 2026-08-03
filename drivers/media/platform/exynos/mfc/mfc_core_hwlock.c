@@ -18,6 +18,7 @@
 #include "mfc_core_pm.h"
 #include "mfc_core_run.h"
 #include "mfc_core_cmd.h"
+#include "mfc_core_hw_reg_api.h"
 
 #include "mfc_sync.h"
 #include "mfc_queue.h"
@@ -113,6 +114,13 @@ int mfc_core_get_hwlock_dev(struct mfc_core *core)
 	spin_lock_irqsave(&core->hwlock.lock, flags);
 	__mfc_print_hwlock(core);
 
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_info("[MSR] Couldn't lock HW. It's Error state\n");
+		spin_unlock_irqrestore(&core->hwlock.lock, flags);
+		mutex_unlock(&core->hwlock_wq.wait_mutex);
+		return 0;
+	}
+
 	if (core->shutdown) {
 		mfc_core_info("Couldn't lock HW. Shutdown was called\n");
 		spin_unlock_irqrestore(&core->hwlock.lock, flags);
@@ -176,6 +184,13 @@ int mfc_core_get_hwlock_ctx(struct mfc_core_ctx *core_ctx)
 
 	spin_lock_irqsave(&core->hwlock.lock, flags);
 	__mfc_print_hwlock(core);
+
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_info("[MSR] Couldn't lock HW. It's Error state\n");
+		spin_unlock_irqrestore(&core->hwlock.lock, flags);
+		mutex_unlock(&core->hwlock_wq.wait_mutex);
+		return 0;
+	}
 
 	if (core->shutdown) {
 		mfc_core_info("Couldn't lock HW. Shutdown was called\n");
@@ -244,7 +259,9 @@ void mfc_core_release_hwlock_dev(struct mfc_core *core)
 	core->hwlock.dev = 0;
 	core->hwlock.owned_by_irq = 0;
 
-	if (core->shutdown) {
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_debug(2, "[MSR] Couldn't wakeup module. It's Error state\n");
+	} else if (core->shutdown) {
 		mfc_core_debug(2, "Couldn't wakeup module. Shutdown was called\n");
 	} else if (list_empty(&core->hwlock.waiting_list)) {
 		mfc_core_debug(2, "No waiting module\n");
@@ -287,7 +304,9 @@ static void __mfc_release_hwlock_ctx_protected(struct mfc_core_ctx *core_ctx)
 	clear_bit(core_ctx->num, &core->hwlock.bits);
 	core->hwlock.owned_by_irq = 0;
 
-	if (core->shutdown) {
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_debug(2, "[MSR] Couldn't wakeup module. It's Error state\n");
+	} else if (core->shutdown) {
 		mfc_core_debug(2, "Couldn't wakeup module. Shutdown was called\n");
 	} else if (list_empty(&core->hwlock.waiting_list)) {
 		mfc_core_debug(2, "No waiting module\n");
@@ -461,6 +480,11 @@ void mfc_core_try_run(struct mfc_core *core)
 	int ret;
 	unsigned long flags;
 
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_info("[MSR] Couldn't run HW. It's Error state\n");
+		return;
+	}
+
 	spin_lock_irqsave(&core->hwlock.lock, flags);
 	__mfc_print_hwlock(core);
 
@@ -496,24 +520,59 @@ void mfc_core_cleanup_work_bit_and_try_run(struct mfc_core_ctx *core_ctx)
 }
 
 void mfc_core_cache_flush(struct mfc_core *core, int is_drm,
-		enum mfc_do_cache_flush do_cache_flush)
+		enum mfc_do_cache_flush do_cache_flush, int drm_switch, int reg_clear)
 {
+	enum mfc_fw_status fw_status;
+
+	/*
+	 * Even if it is determined that the attribute of the previous instance
+	 * and the current instance have been changed, (= drm_switch)
+	 * there is no need to cache flush if the F/W of the previous instance is unloaded.
+	 */
+	if (drm_switch) {
+		if (is_drm)
+			fw_status = core->fw.status;
+		else
+			fw_status = core->fw.drm_status;
+
+		if (!(fw_status & MFC_FW_LOADED)) {
+			mfc_core_debug(2, "F/W has already un-loaded\n");
+			do_cache_flush = MFC_NO_CACHEFLUSH;
+		}
+	}
+
 	if (do_cache_flush == MFC_CACHEFLUSH) {
 		mfc_core_cmd_cache_flush(core);
-		if (mfc_wait_for_done_core(core,
-				MFC_REG_R2H_CMD_CACHE_FLUSH_RET)) {
+		if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_CACHE_FLUSH_RET)) {
 			mfc_core_err("Failed to CACHE_FLUSH\n");
-			core->logging_data->cause |=
-				(1 << MFC_CAUSE_FAIL_CACHE_FLUSH);
+			core->logging_data->cause |= (1 << MFC_CAUSE_FAIL_CACHE_FLUSH);
 			call_dop(core, dump_and_stop_always, core);
 		}
 	} else if (do_cache_flush == MFC_NO_CACHEFLUSH) {
 		mfc_core_debug(2, "F/W has already done cache flush with prediction\n");
 	}
 
-	mfc_core_pm_clock_off(core);
-	core->curr_core_ctx_is_drm = is_drm;
-	mfc_core_pm_clock_on_with_base(core, (is_drm ? MFCBUF_DRM : MFCBUF_NORMAL));
+	/* When init_hw(), reg_clear is required between cache flush and (un)protection */
+	if (reg_clear) {
+		mfc_core_reg_clear(core);
+		mfc_core_debug(2, "Done register clear\n");
+	}
+
+	mfc_core_change_attribute(core, is_drm);
+
+	/* drm_switch may not occur when cache flush is required during migration. */
+	if (!drm_switch)
+		return;
+
+	if (is_drm) {
+		MFC_TRACE_CORE("Normal -> DRM\n");
+		mfc_core_debug(2, "Normal -> DRM need protection\n");
+		mfc_core_protection_on(core);
+	} else {
+		MFC_TRACE_CORE("DRM -> Normal\n");
+		mfc_core_debug(2, "DRM -> Normal need un-protection\n");
+		mfc_core_protection_off(core);
+	}
 }
 
 /*
@@ -541,8 +600,8 @@ static int __mfc_nal_q_just_run(struct mfc_core *core, struct mfc_core_ctx *core
 
 			/* enable NAL QUEUE */
 			if (drm_switch)
-				mfc_core_cache_flush(core,
-						ctx->is_drm, MFC_CACHEFLUSH);
+				mfc_core_cache_flush(
+					core, ctx->is_drm, MFC_CACHEFLUSH, drm_switch, 0);
 
 			mfc_ctx_info("[NALQ] start NAL QUEUE\n");
 			mfc_core_nal_q_start(core, nal_q_handle);
@@ -748,6 +807,11 @@ int mfc_core_just_run(struct mfc_core *core, int new_ctx_index)
 
 	mfc_core_idle_update_hw_run(core, ctx);
 
+	if ((core->state == MFCCORE_ERROR) || (core_ctx->state == MFCINST_ERROR)) {
+		mfc_core_info("[MSR] Couldn't run HW. It's Error state\n");
+		return 0;
+	}
+
 	if (core_ctx->state == MFCINST_RUNNING)
 		mfc_clean_core_ctx_int_flags(core_ctx);
 
@@ -768,7 +832,7 @@ int mfc_core_just_run(struct mfc_core *core, int new_ctx_index)
 	if (core->curr_core_ctx_is_drm != ctx->is_drm)
 		drm_switch = 1;
 	else
-		core->curr_core_ctx_is_drm = ctx->is_drm;
+		mfc_core_change_attribute(core, ctx->is_drm);
 
 	mfc_debug(2, "drm_switch = %d, is_drm = %d\n", drm_switch, ctx->is_drm);
 
@@ -795,7 +859,7 @@ int mfc_core_just_run(struct mfc_core *core, int new_ctx_index)
 	if (!MFC_FEATURE_SUPPORT(dev, dev->pdata->drm_switch_predict)
 			|| dev->debugfs.drm_predict_disable) {
 		if (drm_switch)
-			mfc_core_cache_flush(core, ctx->is_drm, MFC_CACHEFLUSH);
+			mfc_core_cache_flush(core, ctx->is_drm, MFC_CACHEFLUSH, drm_switch, 0);
 	} else {
 		/* If Normal <-> Secure switch, check if cache flush was done */
 		if (drm_switch) {
@@ -804,7 +868,8 @@ int mfc_core_just_run(struct mfc_core *core, int new_ctx_index)
 					"Last command had No cache flush");
 			mfc_core_cache_flush(core, ctx->is_drm,
 					core->last_cmd_has_cache_flush ?
-					MFC_NO_CACHEFLUSH : MFC_CACHEFLUSH);
+					MFC_NO_CACHEFLUSH : MFC_CACHEFLUSH,
+					drm_switch, 0);
 		}
 
 		/*
@@ -836,6 +901,7 @@ int mfc_core_just_run(struct mfc_core *core, int new_ctx_index)
 		 * as this will be newly decided in Prediction code.
 		 */
 		core->cache_flush_flag = 0;
+		core->last_cmd_has_cache_flush = 0;
 
 		/*
 		 * Check again the ctx condition and clear work bits
@@ -861,6 +927,11 @@ void mfc_core_hwlock_handler_irq(struct mfc_core *core, struct mfc_ctx *ctx,
 	int new_ctx_index;
 	unsigned long flags;
 	int ret, need_butler = 0;
+
+	if (core->state == MFCCORE_ERROR) {
+		mfc_core_info("[MSR] Couldn't lock HW. It's Error state\n");
+		return;
+	}
 
 	spin_lock_irqsave(&core->hwlock.lock, flags);
 	__mfc_print_hwlock(core);

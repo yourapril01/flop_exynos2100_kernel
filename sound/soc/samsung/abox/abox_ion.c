@@ -14,6 +14,7 @@
 #include <linux/compat.h>
 #include <linux/ion.h>
 #include <linux/dma-buf.h>
+#include <linux/workarounds.h>
 
 #include "abox.h"
 #include "abox_ion.h"
@@ -133,6 +134,10 @@ struct abox_ion_buf *abox_ion_alloc(struct device *dev,
 		bool playback)
 {
 	struct device *dev_abox = data->dev;
+#if IS_ENABLED(CONFIG_DMABUF_SAMSUNG_HEAPS)
+	const char *dma_heap_name = "system-uncached";
+	struct dma_heap *dma_heap;
+#endif
 	struct abox_ion_buf *buf;
 	int ret;
 
@@ -147,13 +152,56 @@ struct abox_ion_buf *abox_ion_alloc(struct device *dev,
 	buf->iova = iova;
 	buf->fd = -EINVAL;
 
+#if IS_ENABLED(CONFIG_DMABUF_SAMSUNG_HEAPS) && IS_ENABLED(CONFIG_ION_EXYNOS)
+	/* both allocators built: runtime-select */
+	if (is_dma_buf_env()) {
+		dma_heap = dma_heap_find(dma_heap_name);
+		if (!dma_heap) {
+			ret = -EPERM;
+			abox_err(dev, "can't find dma heap: %d\n", ret);
+			goto error_alloc;
+		}
+
+		buf->dma_buf = dma_heap_buffer_alloc(dma_heap, buf->size, O_RDWR, 0);
+		dma_heap_put(dma_heap);
+		if (IS_ERR(buf->dma_buf)) {
+			ret = PTR_ERR(buf->dma_buf);
+			abox_err(dev, "failed to alloc dma buffer: %d\n", ret);
+			goto error_alloc;
+		}
+	} else {
+		buf->dma_buf = ion_alloc(buf->size, ION_HEAP_SYSTEM, 0);
+		if (IS_ERR(buf->dma_buf)) {
+			ret = PTR_ERR(buf->dma_buf);
+			abox_err(dev, "failed to ion_alloc(): %d\n", ret);
+			goto error_alloc;
+		}
+	}
+#elif IS_ENABLED(CONFIG_DMABUF_SAMSUNG_HEAPS)
+	/* DMA-BUF only */
+	dma_heap = dma_heap_find(dma_heap_name);
+	if (!dma_heap) {
+		ret = -EPERM;
+		abox_err(dev, "can't find dma heap: %d\n", ret);
+		goto error_alloc;
+	}
+
+	buf->dma_buf = dma_heap_buffer_alloc(dma_heap, buf->size, O_RDWR, 0);
+	dma_heap_put(dma_heap);
+	if (IS_ERR(buf->dma_buf)) {
+		ret = PTR_ERR(buf->dma_buf);
+		abox_err(dev, "failed to alloc dma buffer: %d\n", ret);
+		goto error_alloc;
+	}
+#else
+	/* ION only */
 	buf->dma_buf = ion_alloc(buf->size, ION_HEAP_SYSTEM, 0);
 	if (IS_ERR(buf->dma_buf)) {
 		ret = PTR_ERR(buf->dma_buf);
 		abox_err(dev, "failed to ion_alloc(): %d\n", ret);
 		goto error_alloc;
 	}
-
+#endif
 	buf->attachment = dma_buf_attach(buf->dma_buf, dev_abox);
 	if (IS_ERR(buf->attachment)) {
 		ret = PTR_ERR(buf->attachment);

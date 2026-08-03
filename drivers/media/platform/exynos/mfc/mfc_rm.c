@@ -1280,11 +1280,16 @@ int mfc_rm_instance_init(struct mfc_dev *dev, struct mfc_ctx *ctx)
 			continue;
 		}
 
-		if (!core->fw.status) {
+		if (!(core->fw.status & MFC_FW_ALLOC)) {
 			ret = mfc_alloc_firmware(core);
 			if (ret)
 				goto err_inst_init;
-			core->fw.status = 1;
+		}
+
+		if (!(core->fw.status & MFC_CTX_ALLOC)) {
+			ret = mfc_alloc_common_context(core);
+			if (ret)
+				goto err_inst_init;
 		}
 	}
 
@@ -1653,7 +1658,6 @@ int mfc_rm_instance_setup(struct mfc_dev *dev, struct mfc_ctx *ctx)
 	if (ctx->dec_priv->consumed) {
 		mfc_debug(2, "[STREAM][2CORE] src should be without consumed\n");
 		ctx->dec_priv->consumed = 0;
-		ctx->dec_priv->remained_size = 0;
 	}
 
 	if (mfc_ctx_ready_set_bit(core_ctx, &core->work_bits))

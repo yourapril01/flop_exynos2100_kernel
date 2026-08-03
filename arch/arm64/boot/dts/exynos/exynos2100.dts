@@ -3522,6 +3522,8 @@
 		#size-cells = <0x01>;
 		ranges;
 		list-scen = "default", "cp_throughput", "mfc_uhd", "mfc_uhd_10bit", "mfc_8k_dec30", "g3d_heavy", "g3d_gamesdk", "g3d_performance", "dp_default", "camera_default", "npu_normal", "mfc_uhd_enc60", "camera_heavy", "npu_performance";
+		/* num_channel, mif_bus_width, bus_width, mif_util, int_util*/
+		bw_params = <4 16 32 65 70>;
 
 		bts_irp0 {
 			#address-cells = <0x02>;
@@ -9098,6 +9100,7 @@
 			reg = <0x08 0x9e000000 0x2000000>;
 			alignment = <0x00 0x400000>;
 			reusable;
+			status = "disabled";
 			phandle = <0x251>;
 		};
 
@@ -9186,43 +9189,54 @@
 			phandle = <0x184>;
 		};
 
+		mfc_fw_rmem: mfc_fw_rmem {
+			compatible = "shared-dma-pool";
+			reg = <0x08 0xa2400000 0x800000>;
+			alignment = <0x00 0x10000>;
+			reusable;
+		};
+
 		vfw_heap {
 			size = <0x400000>;
 			alignment = <0x00 0x10000>;
 			phandle = <0x141>;
 		};
 
-		crypto_heap {
+		crypto: crypto_heap {
 			compatible = "shared-dma-pool";
 			size = <0x3000000>;
-			alloc-ranges = <0x0a 0x00 0x10000000 0x00 0x40000000 0xb0000000>;
+			alloc-ranges = <0x8 0xa0000000 0x60000000>,
+				<0x9 0x00000000 0x80000000>,
+				<0x9 0x80000000 0x80000000>;
 			alignment = <0x00 0x400000>;
 			reusable;
 			phandle = <0x140>;
 		};
 
-		vstream_heap {
+		vstream: vstream_heap {
 			compatible = "shared-dma-pool";
 			size = <0x4800000>;
-			alloc-ranges = <0x00 0x40000000 0xb0000000>;
+			alloc-ranges = <0x8 0xa0000000 0x60000000>,
+				<0x9 0x00000000 0x80000000>,
+				<0x9 0x80000000 0x80000000>;
 			alignment = <0x00 0x400000>;
 			reusable;
 			phandle = <0x142>;
 		};
 
-		vframe_heap {
+		vframe: vframe_heap {
 			size = <0x20000000>;
 			alignment = <0x00 0x10000>;
 			phandle = <0x143>;
 		};
 
-		vscaler_heap {
+		vscaler: vscaler_heap {
 			size = <0x3400000>;
 			alignment = <0x00 0x10000>;
 			phandle = <0x144>;
 		};
 
-		gpu_buffer {
+		gpu_buffer: gpu_buffer {
 			size = <0x4000000>;
 			alignment = <0x00 0x10000>;
 			phandle = <0x145>;
@@ -9236,7 +9250,7 @@
 			phandle = <0x146>;
 		};
 
-		tui_heap {
+		tui: tui_heap {
 			compatible = "shared-dma-pool";
 			size = <0x4800000>;
 			alignment = <0x00 0x400000>;
@@ -9245,13 +9259,13 @@
 			phandle = <0x147>;
 		};
 
-		secure_camera_heap {
+		secure_camera: secure_camera_heap {
 			reg = <0x00 0x96000000 0x38b0000>;
 			alignment = <0x00 0x10000>;
 			phandle = <0x148>;
 		};
 
-		camera_heap {
+		rbin: camera_heap {
 			size = <0x27900000>;
 			alloc-ranges = <0x0a 0x00 0xffffffff 0x09 0x00 0xffffffff>;
 			alignment = <0x00 0x400000>;
@@ -17548,7 +17562,17 @@
 		compatible = "samsung,exynos-mfc";
 		iommus = <0x13b 0x13c 0x13d 0x13e>;
 		samsung,iommu-group = <0x13f>;
+		samsung,iommu-reserved-map = <0x0 0x0 0x10000000>,
+				/* Normal MFC0 firmware */
+				<0x0 0x10000000 0x100000>,
+				/* Normal MFC1 firmware */
+				<0x0 0x10100000 0x100000>;
 		samsung,tzmp;
+
+		/* for F/W buffer */
+		memory-region = <&mfc_fw_rmem>;
+
+		samsung,iommu-identity-map = <0x0 0x15e10000 0x10000>;
 		ip_ver = <0x1500010c>;
 		debug_mode = <0x00>;
 		nal_q_entry_size = <0x300>;
@@ -17568,12 +17592,17 @@
 		wait_nalq_status = <0x01 0x191107>;
 		drm_switch_predict = <0x01 0x00>;
 		sbwc_enc_src_ctrl = <0x01 0x200110>;
+		average_qp = <0x01 0x201030>;
+		security_ctrl = <0x00>;
+		mv_search_mode = <0x01 0x201118>;
 		enc_idr_flag = <0x01 0x210614>;
 		min_quality_mode = <0x01 0x210713>;
 		support_av1_dec = <0x01>;
 		av1_film_grain = <0x01 0x200717>;
 		P010_decoding = <0x01>;
 		dithering_enable = <0x00>;
+		stride_align = <0x10>;
+		stride_type = <0x00>;
 		enc_ts_delta = <0x01 0x211015>;
 		support_10bit = <0x01>;
 		support_422 = <0x01>;
@@ -17583,9 +17612,11 @@
 		sbwc_dec_max_width = <0x780>;
 		sbwc_dec_max_height = <0x440>;
 		sbwc_dec_max_inst_num = <0x01>;
+		sbwc_dec_hdr10_off = <0x00>;
 		max_hdr_win = <0x01>;
 		display_err_type = <0x02>;
 		display_framerate = <0x00>;
+		enc_min_bit_cnt = <0x01>;
 		enc_param_num = <0x19>;
 		enc_param_addr = <0xf7b4 0xf7b8 0xf7b0 0xf798 0xfa2c 0xf790 0xfa34 0xfa38 0xfa3c 0xf7c0 0xf7c8 0xf7cc 0xfa60 0xfdd4 0xfddc 0xfb54 0xfb58 0xfba8 0xfd90 0xfd94 0xfd40 0xfd48 0xfd4c 0xfd50 0xfd80>;
 		enc_param_val = <0x80 0x80 0x00 0x4000 0x3fd00 0x00 0x00 0x2710 0x3e8 0x00 0x00 0x00 0x00 0x8050d211 0x00 0x3011 0x00 0x00 0x2d 0xa00 0x1d 0xf4240 0x33003300 0x02 0x01>;
@@ -17653,7 +17684,9 @@
 			clocks = <0x0d 0x5dc>;
 			iommus = <0x13b 0x13c>;
 			samsung,iommu-group = <0x13f>;
+			samsung,iommu-reserved-map = <0x0 0x10000000 0x100000>;
 			samsung,tzmp;
+			samsung,iommu-identity-map = <0x0 0x15e10000 0x10000>;
 			samsung,imgloader-s2mpu-support;
 			ip_ver = <0x1500010c>;
 			share_sysmmu = <0x00>;
@@ -17871,6 +17904,7 @@
 			clocks = <0x0d 0x60e>;
 			iommus = <0x13d 0x13e>;
 			samsung,iommu-group = <0x13f>;
+			samsung,iommu-reserved-map = <0x0 0x10100000 0x100000>;
 			samsung,tzmp;
 			samsung,imgloader-s2mpu-support;
 			ip_ver = <0x1500010d>;
@@ -18144,6 +18178,89 @@
 		memory-region = <0x149>;
 		phandle = <0x325>;
 	};
+
+	dma_heap_exception_area {
+		#address-cells = <0x02>;
+		#size-cells = <0x01>;
+		ranges;
+		exception-range = <0x08 0x80000000 0x20000000>;
+	};
+
+	system_dma_heap {
+		compatible = "samsung,dma-heap-system";
+		dma-heap,name = "system";
+	};
+
+	crypto_dma_heap {
+		compatible = "samsung,dma-heap-cma";
+		memory-region = <&crypto>;
+		dma-heap,name = "crypto";
+		dma-heap,alignment = <0x10000>;
+	};
+
+	video_stream_dma_heap {
+		compatible = "samsung,dma-heap-cma";
+		memory-region = <&vstream>;
+		dma-heap,name = "system-secure-vstream";
+		dma-heap,video_aligned;
+		dma-heap,secure;
+		dma-heap,protection_id = <0x03>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	video_frame_dma_heap {
+		compatible = "samsung,dma-heap-carveout";
+		memory-region = <&vframe>;
+		dma-heap,name = "vframe";
+		dma-heap,secure;
+		dma-heap,protection_id = <0x05>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	video_scaler_dma_heap {
+		compatible = "samsung,dma-heap-carveout";
+		memory-region = <&vscaler>;
+		dma-heap,name = "vscaler";
+		dma-heap,secure;
+		dma-heap,protection_id = <0x06>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	gpu_buffer_dma_heap {
+		compatible = "samsung,dma-heap-carveout";
+		memory-region = <&gpu_buffer>;
+		dma-heap,name = "system-secure-gpu_buffer";
+		dma-heap,secure;
+		dma-heap,protection_id = <0x09>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	secure_camera_dma_heap {
+		compatible = "samsung,dma-heap-carveout";
+		memory-region = <&secure_camera>;
+		dma-heap,name = "secure_camera";
+		dma-heap,untouchable;
+		dma-heap,secure;
+		dma-heap,protection_id = <0x0b>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	tui_dma_heap {
+		compatible = "samsung,dma-heap-cma";
+		memory-region = <&tui>;
+		dma-heap,name = "tui";
+		dma-heap,secure;
+		dma-heap,protection_id = <0x14>;
+		dma-heap,alignment = <0x10000>;
+	};
+
+	rbin_dma_heap {
+		compatible = "samsung,dma-heap-rbin";
+		memory-region = <&rbin>;
+		dma-heap,name = "camera";
+		dma-heap,alignment = <0x10000>;
+	};
+
 
 	exynos_is@17330000 {
 		compatible = "samsung,exynos-is";

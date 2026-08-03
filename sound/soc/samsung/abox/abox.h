@@ -12,9 +12,17 @@
 #ifndef __SND_SOC_ABOX_H
 #define __SND_SOC_ABOX_H
 
-#include <sound/samsung/abox.h>
+#if IS_ENABLED(CONFIG_DMABUF_SAMSUNG_HEAPS)
+#include <linux/dma-heap.h>
+#endif
+#if IS_ENABLED(CONFIG_ION)
+#include <linux/ion.h>
+#endif
 #include <linux/miscdevice.h>
 #include <linux/dma-direction.h>
+
+#include <sound/samsung/abox.h>
+
 #include <soc/samsung/memlogger.h>
 #include <soc/samsung/sysevent.h>
 #include "abox_qos.h"

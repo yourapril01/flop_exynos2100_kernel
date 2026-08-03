@@ -23,6 +23,7 @@
 
 irqreturn_t mfc_core_top_half_irq(int irq, void *priv);
 irqreturn_t mfc_core_irq(int irq, void *priv);
+void mfc_core_handle_error(struct mfc_core *core);
 
 static inline enum vb2_buffer_state __mfc_get_buf_state(unsigned int err)
 {
@@ -57,6 +58,7 @@ static inline int __mfc_core_is_err_condition(unsigned int err)
 	case MFC_REG_ERR_INSUFFICIENT_NUM_DPB:
 	case MFC_REG_ERR_INSUFFICIENT_MV_BUF_SIZE:
 	case MFC_REG_ERR_INSUFFICIENT_SCRATCH_BUF_SIZE:
+	case MFC_REG_ERR_UNDEFINED_EXCEPTION:
 		return 1;
 	default:
 		return 0;
