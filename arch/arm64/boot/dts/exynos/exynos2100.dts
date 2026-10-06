@@ -3440,7 +3440,7 @@
 		#cooling-cells = <0x02>;
 		ect-coeff-index = <0x03>;
 		governor = "interactive";
-		interactive_info = <676000 60 0>;
+		interactive_info = <403000 45 0>;
 		gpu_dvfs_table_size = <10 9>;
 		gpu_dvfs_table = <
 			949000 78  82 5 3172000 858000 0 0 16
