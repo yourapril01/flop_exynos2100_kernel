@@ -297,6 +297,8 @@ int trace_event_reg(struct trace_event_call *call,
 
 #ifdef CONFIG_PERF_EVENTS
 	case TRACE_REG_PERF_REGISTER:
+		if (!call->class->perf_probe)
+			return -ENODEV;
 		return tracepoint_probe_register(call->tp,
 						 call->class->perf_probe,
 						 call);
@@ -2470,6 +2472,18 @@ static struct notifier_block trace_module_nb = {
 	.notifier_call = trace_module_notify,
 	.priority = 1, /* higher than trace.c module notify */
 };
+
+void ftrace_remove_module_events(struct module *mod)
+{
+	if (!mod)
+		return;
+	mutex_lock(&event_mutex);
+	mutex_lock(&trace_types_lock);
+	trace_module_remove_events(mod);
+	mutex_unlock(&trace_types_lock);
+	mutex_unlock(&event_mutex);
+}
+EXPORT_SYMBOL_GPL(ftrace_remove_module_events);
 #endif /* CONFIG_MODULES */
 
 /* Create a new event directory structure for a trace directory. */

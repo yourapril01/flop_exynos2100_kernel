@@ -1,94 +1,112 @@
 #include <linux/compiler.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 #include <linux/sched/signal.h>
-#endif
 #include <linux/slab.h>
 #include <linux/task_work.h>
 #include <linux/thread_info.h>
 #include <linux/seccomp.h>
-#include <linux/bpf.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
-#include <linux/version.h>
-#include <linux/workqueue.h>
 
 #include "policy/allowlist.h"
-#include "setuid_hook.h"
+#include "hook/setuid_hook.h"
 #include "klog.h" // IWYU pragma: keep
 #include "manager/manager_identity.h"
-#include "selinux/selinux.h"
 #include "infra/seccomp_cache.h"
 #include "supercall/supercall.h"
-#include "hook_manager.h"
+#include "hook/hook_manager.h"
 #include "feature/kernel_umount.h"
 #include "compat/kernel_compat.h"
 #ifdef CONFIG_KSU_SUSFS
 #include <linux/susfs_def.h>
+#include <linux/workqueue.h>
+#include "selinux/selinux.h"
 #endif // #ifdef CONFIG_KSU_SUSFS
 
 extern void disable_seccomp(struct task_struct *tsk);
 
 #ifdef CONFIG_KSU_SUSFS
-static inline bool is_zygote_isolated_service_uid(uid_t uid)
-{
-    uid %= 100000;
-    return (uid >= 99000 && uid < 100000);
-}
-
-static inline bool is_zygote_normal_app_uid(uid_t uid)
-{
-    uid %= 100000;
-    return (uid >= 10000 && uid < 19999);
-}
-
 extern u32 susfs_zygote_sid;
-extern struct cred *ksu_cred;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+extern u32 susfs_zygote_next_sid;
 extern struct work_struct susfs_extra_works;
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 
-static void ksu_handle_extra_susfs_work(void)
+// - Defer extra susfs works (e.g. re-flagging sus_path_loop) to a workqueue so we
+//   do not block the zygote child here and reduce the risk of time side channels.
+static inline void ksu_handle_extra_susfs_work(void)
 {
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-    schedule_work(&susfs_extra_works);
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-}
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-extern void susfs_try_umount(uid_t uid);
-#endif // #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-#endif // #ifdef CONFIG_KSU_SUSFS
-
-static void ksu_install_manager_fd_tw_func(struct callback_head *cb)
-{
-    ksu_install_fd();
-    kfree(cb);
+    if (!work_pending(&susfs_extra_works))
+        schedule_work(&susfs_extra_works);
 }
 
-int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
+// Same conditions ksu_handle_umount() uses to decide whether a zygote child gets umounted
+static inline bool ksu_susfs_should_umount_uid(uid_t new_uid)
 {
-    // we rely on the fact that zygote always call setresuid(3) with same uids
-    uid_t new_uid = ruid;
-    uid_t old_uid = current_uid().val;
+    if (is_isolated_process(new_uid))
+        return true;
 
-    // We only interest in process spwaned by zygote
-    if (!susfs_is_sid_equal(current_cred(), susfs_zygote_sid)) {
+    return (is_appuid(new_uid) || new_uid == WEBVIEW_ZYGOTE_UID) &&
+           ksu_uid_should_umount(new_uid);
+}
+
+// - Processes spawned by zygote_next already live in the init mount namespace,
+//   so only flag them for susfs and do not umount anything here.
+static int ksu_handle_susfs_zygote_next_setresuid(uid_t new_uid)
+{
+    if (unlikely(is_uid_manager(new_uid)))
+        return 0;
+
+    if (ksu_susfs_should_umount_uid(new_uid)) {
+        susfs_set_current_proc_no_su();
+        susfs_set_current_proc_umounted();
+        susfs_set_current_proc_umounted_for_zygote_next();
+        ksu_handle_extra_susfs_work();
         return 0;
     }
 
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-    // Check if spawned process is isolated service first, and force to do umount if so  
-    if (is_zygote_isolated_service_uid(new_uid)) {
-        goto do_umount;
-    }
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+    if (!ksu_is_allow_uid_for_current(new_uid))
+        susfs_set_current_proc_no_su();
 
-    pr_debug("handle_setresuid from %d to %d\n", old_uid, new_uid);
+    return 0;
+}
+
+// - Flag zygote spawned processes for susfs. The setresuid hook may be reached more than
+//   once for the same process (syscall + LSM hook), so bail out if it is already flagged.
+static void ksu_handle_susfs_zygote_setresuid(uid_t new_uid)
+{
+    if (!susfs_is_sid_equal(current_cred(), susfs_zygote_sid))
+        return;
+
+    if (susfs_is_current_proc_umounted())
+        return;
+
+    if (ksu_susfs_should_umount_uid(new_uid)) {
+        susfs_set_current_proc_no_su();
+        susfs_set_current_proc_umounted();
+        ksu_handle_extra_susfs_work();
+        return;
+    }
+
+    if (!ksu_is_allow_uid_for_current(new_uid))
+        susfs_set_current_proc_no_su();
+}
+#endif // #ifdef CONFIG_KSU_SUSFS
+
+int ksu_handle_setresuid(uid_t old_uid, uid_t new_uid)
+{
+    // we rely on the fact that zygote always call setresuid(3) with same uids
+
+#ifdef CONFIG_KSU_SUSFS
+    // We only care about processes spawned by zygote_next as root
+    if (unlikely(current_uid().val == 0 &&
+                 susfs_is_sid_equal(current_cred(), susfs_zygote_next_sid)))
+        return ksu_handle_susfs_zygote_next_setresuid(new_uid);
+#endif // #ifdef CONFIG_KSU_SUSFS
+
+    pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
 
     if (unlikely(is_uid_manager(new_uid))) {
 
@@ -105,23 +123,11 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 #endif
 
         pr_info("install fd for manager: %d\n", new_uid);
-        struct callback_head *cb = kzalloc(sizeof(*cb), GFP_ATOMIC);
-        if (!cb)
-            return 0;
-        cb->func = ksu_install_manager_fd_tw_func;
-        if (task_work_add(current, cb, TWA_RESUME)) {
-            kfree(cb);
-            pr_warn("install manager fd add task_work failed\n");
-        }
+        ksu_install_fd();
         return 0;
     }
 
-// Check if spawned process is normal user app and needs to be umounted
-    if (likely(is_zygote_normal_app_uid(new_uid) && ksu_uid_should_umount(new_uid))) {
-        goto do_umount;
-    }
-
-	if (ksu_is_allow_uid_for_current(new_uid)) {
+    if (ksu_is_allow_uid_for_current(new_uid)) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
         if (current->seccomp.mode == SECCOMP_MODE_FILTER && current->seccomp.filter) {
             ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
@@ -139,31 +145,17 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 #endif
     }
 
-    // Handle kernel umount
-    //ksu_handle_umount(old_uid, new_uid);
+#ifdef CONFIG_KSU_SUSFS
+    if (current_uid().val == 0)
+        ksu_handle_susfs_zygote_setresuid(new_uid);
+#endif // #ifdef CONFIG_KSU_SUSFS
 
-    return 0;
-
-do_umount:
     // Handle kernel umount
-#ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
     ksu_handle_umount(old_uid, new_uid);
-#else
-    susfs_try_umount(new_uid);
-#endif // #ifndef CONFIG_KSU_SUSFS_TRY_UMOUNT
-
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-    //susfs_run_sus_path_loop(new_uid);
-#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-
-    ksu_handle_extra_susfs_work();
-
-    susfs_set_current_proc_umounted();
 
     return 0;
 }
 
-extern void ksu_lsm_hook_init(void);
 void __init ksu_setuid_hook_init(void)
 {
 	ksu_kernel_umount_init();

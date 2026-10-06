@@ -7,6 +7,7 @@ kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/adb_root.o
 kernelsu-objs += feature/selinux_hide.o
+kernelsu-objs += feature/module_load_filter.o
 kernelsu-objs += hook/setuid_hook.o
 
 ifndef CONFIG_KSU_DISABLE_MANAGER
@@ -39,7 +40,7 @@ ifdef CONFIG_ARM64
 kernelsu-objs += compat/apatch_conflict.o
 endif
 
-ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes 
+ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-missing-prototypes
 ccflags-y += $(call cc-disable-warning, int-conversion)
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-unused-variable -Wno-missing-braces
 ccflags-y += -Wno-int-to-pointer-cast -Wno-declaration-after-statement
@@ -73,10 +74,10 @@ endif
 ifneq ($(LOCAL_GIT_EXISTS),0)
 $(shell cd $(KSU_SRC); [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow >/dev/null 2>&1 || true)
 endif
-KSU_VERSION_OVERRIDE := 35019
-KSU_TAG_NAME_OVERRIDE := v4.1.0
-KSU_COMMIT_SHA_OVERRIDE := 97163bdc8ad2ee59b523e9e34edeb4c286eceb04
-KSU_BRANCH_NAME_OVERRIDE := main
+KSU_VERSION_OVERRIDE := 35171
+KSU_TAG_NAME_OVERRIDE := v4.2.0-rc3
+KSU_COMMIT_SHA_OVERRIDE := 239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb
+KSU_BRANCH_NAME_OVERRIDE := detached
 KSU_LOCAL_VERSION := $(if $(filter 1,$(LOCAL_GIT_EXISTS)),$(shell cd $(KSU_VERSION_SRC); $(GIT_BIN) rev-list --count HEAD 2>/dev/null || echo 0),0)
 KSU_VERSION := $(if $(strip $(KSU_VERSION_OVERRIDE)),$(KSU_VERSION_OVERRIDE),$(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700))
 
@@ -112,6 +113,10 @@ KERNEL_TYPE := GKI 1.0
 endif
 else
 KERNEL_TYPE := GKI 2.0
+endif
+
+ifneq ($(shell test $(VERSION) -ge 4; echo $$?),0)
+KERNEL_TYPE := Non-GKI (Legacy)
 endif
 $(info -- KERNEL_VERSION: $(KERNEL_VERSION))
 $(info -- KERNEL_TYPE: $(KERNEL_TYPE))
@@ -168,7 +173,7 @@ ifdef CONFIG_KSU_TRACEPOINT_HOOK
       $(info -- Current Kernel Type: $(KERNEL_TYPE))
       $(info -- If you really want to continue, go to Kbuild and comment out this warning.)
       $(info -- Usually, this error occurs because you forgot to enable some kernel configurations.)
-      $(info -- Read: https://resukisu.github.io/guide/manual-integrate.html)
+      $(info -- Read: https://resukisu.org/guide/manual-integrate.html)
       $(error TP hooks are incompatible with Non-GKI/GKI 1.0 kernels.)
     endif
   endif

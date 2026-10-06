@@ -69,8 +69,7 @@ static inline void mfc_mem_buf_prepare(struct vb2_buffer *vb, int stream)
 		ret = -ENOTSUPP;
 		if (stream && dbuf->ops->end_cpu_access_partial)
 			ret = dma_buf_end_cpu_access_partial(dbuf, dir,
-				vb->planes[i].data_offset,
-				(vb2_get_plane_payload(vb, i) - vb->planes[i].data_offset));
+					0, vb2_get_plane_payload(vb, i));
 
 		if (ret < 0)
 			dma_buf_end_cpu_access(dbuf, dir);
@@ -92,8 +91,7 @@ static inline void mfc_mem_buf_finish(struct vb2_buffer *vb, int stream)
 		ret = -ENOTSUPP;
 		if (stream && dbuf->ops->begin_cpu_access_partial)
 			ret = dma_buf_begin_cpu_access_partial(dbuf, DMA_FROM_DEVICE,
-				vb->planes[i].data_offset,
-				(vb2_get_plane_payload(vb, i) - vb->planes[i].data_offset));
+					0, vb2_get_plane_payload(vb, i));
 
 		if (ret < 0)
 			dma_buf_begin_cpu_access(dbuf, DMA_FROM_DEVICE);
@@ -162,7 +160,8 @@ void mfc_mem_cleanup_user_shared_handle(struct mfc_ctx *ctx,
 
 int mfc_mem_special_buf_alloc(struct mfc_dev *dev,
 		struct mfc_special_buf *special_buf);
-void mfc_mem_special_buf_free(struct mfc_dev *dev, struct mfc_special_buf *special_buf);
+void mfc_mem_special_buf_free(struct mfc_dev *dev,
+		struct mfc_special_buf *special_buf);
 
 void mfc_bufcon_put_daddr(struct mfc_ctx *ctx, struct mfc_buf *mfc_buf, int plane);
 #if IS_ENABLED(CONFIG_MFC_USE_DMABUF_CONTAINER)
@@ -183,7 +182,8 @@ void mfc_cleanup_iovmm(struct mfc_ctx *ctx);
 void mfc_cleanup_iovmm_except_used(struct mfc_ctx *ctx);
 
 int mfc_iommu_map_firmware(struct mfc_core *core, struct mfc_special_buf *fw_buf);
-int mfc_iommu_map_sfr(struct mfc_core *core);
+int mfc_map_votf_sfr(struct mfc_core *core, unsigned int addr);
+void mfc_unmap_votf_sfr(struct mfc_core *core, unsigned int addr);
 
 void mfc_check_iova(struct mfc_dev *dev);
 #endif /* __MFC_MEM_H */

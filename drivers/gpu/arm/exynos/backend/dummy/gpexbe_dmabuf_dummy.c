@@ -19,9 +19,12 @@
  */
 
 /* Implements */
+#include <linux/types.h>
+#include <linux/export.h>
 #include <gpexbe_dmabuf.h>
 
 bool gpexbe_dmabuf_is_cached(struct dma_buf *dmabuf)
 {
 	return true;
 }
+EXPORT_SYMBOL_GPL(gpexbe_dmabuf_is_cached);

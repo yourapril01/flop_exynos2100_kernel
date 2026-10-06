@@ -20,10 +20,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.resukisu.resukisu.ui.component.settings.SettingsJumpPageWidget
 import com.resukisu.resukisu.ui.component.settings.lazySegmentColumn
+import com.resukisu.resukisu.ui.theme.ThemeConfig
+import com.resukisu.resukisu.ui.theme.renderBackgroundBlur
+import org.koin.compose.koinInject
+
 
 private const val ADD_ENTRY_KEY = "susfs_add_entry"
 private const val EMPTY_STATE_KEY = "susfs_empty_state"
@@ -42,12 +48,14 @@ internal fun SuSFSDescriptionCard(
     description: String? = null,
     content: @Composable ColumnScope.() -> Unit = {},
 ) {
+    val themeConfig: ThemeConfig = koinInject()
     Surface(
         modifier = modifier
             .padding(horizontal = 16.dp, vertical = 8.dp)
-            .fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .renderBackgroundBlur(MaterialTheme.colorScheme.primaryContainer),
+        color = if (themeConfig.isEnableBlurExp) Color.Transparent else MaterialTheme.colorScheme.primaryContainer,
         contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
     ) {
         Column(

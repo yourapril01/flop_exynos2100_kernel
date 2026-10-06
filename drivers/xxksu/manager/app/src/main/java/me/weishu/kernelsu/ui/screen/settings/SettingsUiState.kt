@@ -16,11 +16,14 @@ data class SettingsUiState(
     val colorStyle: String = PaletteStyle.TonalSpot.name,
     val colorSpec: String = ColorSpec.SpecVersion.SPEC_2025.name,
     val enablePredictiveBack: Boolean = false,
+    val enableSwipeDismiss: Boolean = true,
+    val pagerInterceptionMode: Int = 1,
     val enableBlur: Boolean = true,
     val enableFloatingBottomBar: Boolean = false,
     val enableFloatingBottomBarBlur: Boolean = false,
     val enableNavigationBadge: Boolean = true,
     val pageScale: Float = 1.0f,
+    val moduleDescriptionMaxLines: Int = 4,
     val enableWebDebugging: Boolean = false,
 
     // Su Compat
@@ -51,7 +54,10 @@ data class SettingsUiState(
     val isLateLoadMode: Boolean = false,
 
     // Auto Jailbreak
-    val autoJailbreak: Boolean = false
+    val autoJailbreak: Boolean = false,
+
+    // Soft Reboot
+    val useSoftReboot: Boolean = false
 )
 
 @Immutable
@@ -69,5 +75,6 @@ data class SettingsScreenActions(
     val onSetDefaultUmountModules: (Boolean) -> Unit,
     val onSetEnableWebDebugging: (Boolean) -> Unit,
     val onSetAutoJailbreak: (Boolean) -> Unit,
+    val onSetUseSoftReboot: (Boolean) -> Unit,
     val onOpenAbout: () -> Unit,
 )

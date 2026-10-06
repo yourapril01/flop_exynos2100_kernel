@@ -130,6 +130,8 @@ else
 endif
 
 ccflags-y += \
+    -I$(srctree)/drivers/gpu/arm/exynos/include \
+    -I$(srctree)/include/uapi/gpu/arm/exynos \
     -I$(srctree)/include/linux \
     -I$(srctree)/drivers/staging/android \
     -I$(src) \
@@ -138,6 +140,10 @@ ccflags-y += \
     -I$(src)/../../../../include
 
 subdir-ccflags-y += $(ccflags-y)
+
+# Suppress all EXPORT_SYMBOL from this version module. This prevents non-selected modules from defining conflicting symbols.
+ccflags-y += -include $(srctree)/drivers/gpu/arm/mali_no_export.h
+
 
 #
 # Kernel Modules
@@ -180,7 +186,8 @@ mali_kbase-y := \
     mali_kbase_regs_history_debugfs.o \
     mali_kbase_dvfs_debugfs.o \
     mali_power_gpu_frequency_trace.o \
-    mali_kbase_trace_gpu_mem.o
+    mali_kbase_trace_gpu_mem.o \
+    exynos/mali_exynos_kbase_entrypoint.o
 
 mali_kbase-$(CONFIG_MALI_CINSTR_GWT) += mali_kbase_gwt.o
 
@@ -229,8 +236,7 @@ INCLUDE_SUBDIR = \
     $(src)/mmu/Kbuild \
     $(src)/tl/Kbuild \
     $(src)/gpu/Kbuild \
-    $(src)/thirdparty/Kbuild \
-    $(src)/../$(MALI_PLATFORM_DIR)/Kbuild
+    $(src)/thirdparty/Kbuild
 
 ifeq ($(CONFIG_MALI_CSF_SUPPORT),y)
     INCLUDE_SUBDIR += $(src)/csf/Kbuild

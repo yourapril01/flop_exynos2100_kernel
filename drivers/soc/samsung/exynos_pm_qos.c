@@ -691,7 +691,7 @@ static inline int exynos_pm_qos_get_value(struct exynos_pm_qos_constraints *c)
 
 	switch (c->type) {
 	case EXYNOS_PM_QOS_MIN:
-		if (freq_control_blocking_enabled()) {
+		if (min_freq_control_blocking_enabled()) {
 			struct exynos_pm_qos_request *req;
 			int min = c->default_value;
 			plist_for_each(node, &c->list) {
@@ -1284,6 +1284,10 @@ static ssize_t exynos_pm_qos_power_write(struct file *filp, const char __user *b
 	req = filp->private_data;
 	if (task_controls_frequencies(current) &&
 	    exynos_pm_qos_is_freq_max_class(req->exynos_pm_qos_class))
+		return count;
+
+	if (task_controls_min_frequencies(current) &&
+	    !exynos_pm_qos_is_freq_max_class(req->exynos_pm_qos_class))
 		return count;
 
 	exynos_pm_qos_update_request(req, value);

@@ -25,55 +25,50 @@
 #include "mfc_mem.h"
 
 /* Initialize hardware */
-int mfc_core_run_init_hw(struct mfc_core *core, int is_drm)
+static int __mfc_init_hw(struct mfc_core *core, enum mfc_buf_usage_type buf_type)
 {
-	enum mfc_buf_usage_type buf_type;
-	enum mfc_do_cache_flush do_cache_flush;
-	int fw_ver, drm_switch;
+	int fw_ver;
 	int ret = 0;
+	int curr_ctx_is_drm_backup;
 
-	if (is_drm)
-		buf_type = MFCBUF_DRM;
-	else
-		buf_type = MFCBUF_NORMAL;
+	mfc_core_debug_enter();
 
-	mfc_core_debug(2, "%s F/W initialize start\n", is_drm ? "secure" : "normal");
+	curr_ctx_is_drm_backup = core->curr_core_ctx_is_drm;
+
+	if (!core->fw_buf.sgt)
+		return -EINVAL;
 
 	/* 0. MFC reset */
+	mfc_core_debug(2, "MFC reset...\n");
+
+	/* At init time, do not call secure API */
+	if (buf_type == MFCBUF_NORMAL)
+		core->curr_core_ctx_is_drm = 0;
+	else if (buf_type == MFCBUF_DRM)
+		core->curr_core_ctx_is_drm = 1;
+
 	ret = mfc_core_pm_clock_on(core);
 	if (ret) {
 		mfc_core_err("Failed to enable clock before reset(%d)\n", ret);
+		core->curr_core_ctx_is_drm = curr_ctx_is_drm_backup;
 		return ret;
 	}
 
-	/* cache flush for previous FW */
-	if (core->curr_core_ctx_is_drm != is_drm) {
-		do_cache_flush = MFC_CACHEFLUSH;
-		drm_switch = 1;
-	} else {
-		do_cache_flush = MFC_NO_CACHEFLUSH;
-		drm_switch = 0;
-	}
-
-	mfc_core_cache_flush(core, is_drm, do_cache_flush, drm_switch, 1);
-
-	mfc_core_reset_mfc(core, buf_type);
-	mfc_core_debug(2, "Done MFC reset\n");
+	mfc_core_reset_mfc(core);
+	mfc_core_debug(2, "Done MFC reset...\n");
 
 	/* 1. Set DRAM base Addr */
 	mfc_core_set_risc_base_addr(core, buf_type);
 
 	/* 2. Release reset signal to the RISC */
-	if (!(core->dev->pdata->security_ctrl && is_drm)) {
-		mfc_core_risc_on(core);
+	mfc_core_risc_on(core);
 
-		mfc_core_debug(2, "Will now wait for completion of firmware transfer\n");
-		if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_FW_STATUS_RET)) {
-			mfc_core_err("Failed to RISC_ON\n");
-			mfc_core_clean_dev_int_flags(core);
-			ret = -EIO;
-			goto err_init_hw;
-		}
+	mfc_core_debug(2, "Will now wait for completion of firmware transfer\n");
+	if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_FW_STATUS_RET)) {
+		mfc_core_err("Failed to RISC_ON\n");
+		mfc_core_clean_dev_int_flags(core);
+		ret = -EIO;
+		goto err_init_hw;
 	}
 
 	/* 3. Initialize firmware */
@@ -100,13 +95,12 @@ int mfc_core_run_init_hw(struct mfc_core *core, int is_drm)
 	if (core->fw.fimv_info != 'D' && core->fw.fimv_info != 'E')
 		core->fw.fimv_info = 'N';
 
-	mfc_core_info("[F/W] MFC %s v%x, %02xyy %02xmm %02xdd (%c)\n",
-			is_drm ? "secure" : "normal",
-			core->core_pdata->ip_ver,
-			mfc_core_get_fw_ver_year(),
-			mfc_core_get_fw_ver_month(),
-			mfc_core_get_fw_ver_date(),
-			core->fw.fimv_info);
+	mfc_core_info("[F/W] MFC v%x, %02xyy %02xmm %02xdd (%c)\n",
+		 core->core_pdata->ip_ver,
+		 mfc_core_get_fw_ver_year(),
+		 mfc_core_get_fw_ver_month(),
+		 mfc_core_get_fw_ver_date(),
+		 core->fw.fimv_info);
 
 	core->fw.date = mfc_core_get_fw_ver_all();
 	/* Check MFC version and F/W version */
@@ -118,14 +112,44 @@ int mfc_core_run_init_hw(struct mfc_core *core, int is_drm)
 		goto err_init_hw;
 	}
 
-	if (is_drm)
-		mfc_core_change_fw_state(core, 1, MFC_FW_INITIALIZED, 1);
-	else
-		mfc_core_change_fw_state(core, 0, MFC_FW_INITIALIZED, 1);
+#if IS_ENABLED(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
+	/* Cache flush for base address change */
+	mfc_core_cmd_cache_flush(core);
+	if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_CACHE_FLUSH_RET)) {
+		mfc_core_err("Failed to CACHE_FLUSH\n");
+		mfc_core_clean_dev_int_flags(core);
+		ret = -EIO;
+		goto err_init_hw;
+	}
+
+	if (buf_type == MFCBUF_DRM && !curr_ctx_is_drm_backup) {
+		mfc_core_pm_clock_off(core);
+		core->curr_core_ctx_is_drm = curr_ctx_is_drm_backup;
+		mfc_core_pm_clock_on_with_base(core, MFCBUF_NORMAL);
+	}
+#endif
 
 err_init_hw:
 	mfc_core_pm_clock_off(core);
+	core->curr_core_ctx_is_drm = curr_ctx_is_drm_backup;
 	mfc_core_debug_leave();
+
+	return ret;
+}
+
+/* Wrapper : Initialize hardware */
+int mfc_core_run_init_hw(struct mfc_core *core)
+{
+	int ret;
+
+	ret = __mfc_init_hw(core, MFCBUF_NORMAL);
+	if (ret)
+		return ret;
+
+#if IS_ENABLED(CONFIG_EXYNOS_CONTENT_PATH_PROTECTION)
+	if (core->fw.drm_status)
+		ret = __mfc_init_hw(core, MFCBUF_DRM);
+#endif
 
 	return ret;
 }
@@ -154,7 +178,7 @@ int mfc_core_run_sleep(struct mfc_core *core)
 {
 	struct mfc_core_ctx *core_ctx;
 	int i;
-	int drm_switch = 0;
+	int need_cache_flush = 0;
 
 	mfc_core_debug_enter();
 
@@ -176,7 +200,7 @@ int mfc_core_run_sleep(struct mfc_core *core)
 
 		core->curr_core_ctx = core_ctx->num;
 		if (core->curr_core_ctx_is_drm != core_ctx->is_drm) {
-			drm_switch = 1;
+			need_cache_flush = 1;
 			mfc_core_info("DRM attribute is changed %d->%d\n",
 					core->curr_core_ctx_is_drm, core_ctx->is_drm);
 		}
@@ -185,8 +209,8 @@ int mfc_core_run_sleep(struct mfc_core *core)
 
 	mfc_core_pm_clock_on(core);
 
-	if (drm_switch)
-		mfc_core_cache_flush(core, core_ctx->is_drm, MFC_CACHEFLUSH, drm_switch, 0);
+	if (need_cache_flush)
+		mfc_core_cache_flush(core, core_ctx->is_drm, MFC_CACHEFLUSH);
 
 	mfc_core_cmd_sleep(core);
 
@@ -211,9 +235,6 @@ int mfc_core_run_sleep(struct mfc_core *core)
 	mfc_core_mfc_off(core);
 	mfc_core_pm_clock_off(core);
 
-	if (core->curr_core_ctx_is_drm)
-		mfc_core_protection_off(core);
-
 	mfc_core_debug_leave();
 
 	return 0;
@@ -225,42 +246,37 @@ int mfc_core_run_wakeup(struct mfc_core *core)
 	int ret = 0;
 
 	mfc_core_debug_enter();
-
 	mfc_core_info("curr_core_ctx_is_drm:%d\n", core->curr_core_ctx_is_drm);
-	if (core->curr_core_ctx_is_drm)
-		buf_type = MFCBUF_DRM;
-	else
-		buf_type = MFCBUF_NORMAL;
 
 	/* 0. MFC reset */
+	mfc_core_debug(2, "MFC reset...\n");
+
 	ret = mfc_core_pm_clock_on(core);
 	if (ret) {
 		mfc_core_err("Failed to enable clock before reset(%d)\n", ret);
 		return ret;
 	}
-	mfc_core_reg_clear(core);
-	mfc_core_debug(2, "Done register clear\n");
+
+	mfc_core_reset_mfc(core);
+	mfc_core_debug(2, "Done MFC reset...\n");
 
 	if (core->curr_core_ctx_is_drm)
-		mfc_core_protection_on(core);
-
-	mfc_core_reset_mfc(core, buf_type);
-	mfc_core_debug(2, "Done MFC reset\n");
+		buf_type = MFCBUF_DRM;
+	else
+		buf_type = MFCBUF_NORMAL;
 
 	/* 1. Set DRAM base Addr */
 	mfc_core_set_risc_base_addr(core, buf_type);
 
 	/* 2. Release reset signal to the RISC */
-	if (!(core->dev->pdata->security_ctrl && (buf_type == MFCBUF_DRM))) {
-		mfc_core_risc_on(core);
+	mfc_core_risc_on(core);
 
-		mfc_core_debug(2, "Will now wait for completion of firmware transfer\n");
-		if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_FW_STATUS_RET)) {
-			mfc_core_err("Failed to RISC_ON\n");
-			core->logging_data->cause |= (1 << MFC_CAUSE_FAIL_RISC_ON);
-			call_dop(core, dump_and_stop_always, core);
-			return -EBUSY;
-		}
+	mfc_core_debug(2, "Will now wait for completion of firmware transfer\n");
+	if (mfc_wait_for_done_core(core, MFC_REG_R2H_CMD_FW_STATUS_RET)) {
+		mfc_core_err("Failed to RISC_ON\n");
+		core->logging_data->cause |= (1 << MFC_CAUSE_FAIL_RISC_ON);
+		call_dop(core, dump_and_stop_always, core);
+		return -EBUSY;
 	}
 
 	mfc_core_debug(2, "Ok, now will write a command to wakeup the system\n");
@@ -296,7 +312,6 @@ int mfc_core_run_dec_init(struct mfc_core *core, struct mfc_ctx *ctx)
 	struct mfc_core_ctx *core_ctx = core->core_ctx[ctx->num];
 	struct mfc_dec *dec = ctx->dec_priv;
 	struct mfc_buf *src_mb;
-	unsigned int strm_size;
 
 	/* Initializing decoding - parsing header */
 
@@ -307,15 +322,16 @@ int mfc_core_run_dec_init(struct mfc_core *core, struct mfc_ctx *ctx)
 		return -EAGAIN;
 	}
 
-	strm_size = mfc_dec_get_strm_size(ctx, src_mb);
 	mfc_debug(2, "Preparing to init decoding\n");
-	mfc_debug(2, "[STREAM] header size: %d, (offset: %u, consumed: %u)\n",
-		strm_size,
-		src_mb->vb.vb2_buf.planes[0].data_offset,
-		dec->consumed);
+	mfc_debug(2, "[STREAM] Header size: %d, (offset: %lu)\n",
+		src_mb->vb.vb2_buf.planes[0].bytesused, dec->consumed);
 
-	mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
-			mfc_dec_get_strm_offset(ctx, src_mb), strm_size);
+	if (dec->consumed)
+		mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
+				dec->consumed, dec->remained_size);
+	else
+		mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
+				0, src_mb->vb.vb2_buf.planes[0].bytesused);
 
 	mfc_debug(2, "[BUFINFO] Header addr: 0x%08llx\n", src_mb->addr[0][0]);
 	mfc_clean_core_ctx_int_flags(core->core_ctx[ctx->num]);
@@ -378,9 +394,12 @@ int mfc_core_run_dec_frame(struct mfc_core *core, struct mfc_ctx *ctx)
 	if (mfc_check_mb_flag(src_mb, MFC_FLAG_EMPTY_DATA))
 		src_mb->vb.vb2_buf.planes[0].bytesused = 0;
 
-	mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
-			mfc_dec_get_strm_offset(ctx, src_mb),
-			mfc_dec_get_strm_size(ctx, src_mb));
+	if (dec->consumed)
+		mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
+				dec->consumed, dec->remained_size);
+	else
+		mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
+				0, src_mb->vb.vb2_buf.planes[0].bytesused);
 
 	if (call_cop(ctx, core_set_buf_ctrls_val, core, ctx,
 				&ctx->src_ctrls[index]) < 0)
@@ -397,6 +416,7 @@ int mfc_core_run_dec_frame(struct mfc_core *core, struct mfc_ctx *ctx)
 	if (dec->consumed && IS_TWO_MODE2(ctx)) {
 		mfc_debug(2, "[STREAM][2CORE] clear consumed for next core\n");
 		dec->consumed = 0;
+		dec->remained_size = 0;
 	}
 	return ret;
 }
@@ -431,8 +451,7 @@ int mfc_core_run_dec_last_frames(struct mfc_core *core, struct mfc_ctx *ctx)
 	} else {
 		if (dec->consumed)
 			mfc_core_set_dec_stream_buffer(core, ctx, src_mb,
-					mfc_dec_get_strm_offset(ctx, src_mb),
-					mfc_dec_get_strm_size(ctx, src_mb));
+					dec->consumed, dec->remained_size);
 		else
 			mfc_core_set_dec_stream_buffer(core, ctx, src_mb, 0, 0);
 		src_index = src_mb->src_index;
@@ -512,7 +531,7 @@ int mfc_core_run_enc_frame(struct mfc_core *core, struct mfc_ctx *ctx)
 
 		mfc_core_set_enc_src_sbwc(core,
 			(is_uncomp ? MFC_ENC_SRC_SBWC_OFF : MFC_ENC_SRC_SBWC_ON));
-		mfc_set_linear_stride_size(ctx, &ctx->raw_buf,
+		mfc_set_linear_stride_size(ctx,
 			(is_uncomp ? enc->uncomp_fmt : ctx->src_fmt));
 		mfc_core_set_enc_stride(core, ctx);
 	}
@@ -565,8 +584,6 @@ int mfc_core_run_enc_frame(struct mfc_core *core, struct mfc_ctx *ctx)
 
 	mfc_clean_core_ctx_int_flags(core_ctx);
 
-	if (enc->is_cbr_fix && dev->pdata->enc_min_bit_cnt)
-		mfc_core_set_min_bit_count(core, ctx);
 	if (IS_H264_ENC(ctx))
 		mfc_core_set_aso_slice_order_h264(core, ctx);
 	if (!dev->debugfs.reg_test)

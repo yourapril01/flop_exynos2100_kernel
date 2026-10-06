@@ -59,6 +59,10 @@ extern bool susfs_is_inode_sus_path(struct inode *inode);
 extern const struct qstr susfs_fake_qstr_name;
 #endif
 
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+
 /* [Feb-1997 T. Schoebel-Theuer]
  * Fundamental changes in the pathname lookup mechanisms (namei)
  * were necessary because of omirr.  The reason is that omirr needs
@@ -140,11 +144,6 @@ extern const struct qstr susfs_fake_qstr_name;
 
 #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
 
-#ifdef CONFIG_NOMOUNT
-extern struct filename *nomount_handle_getname(struct filename *name);
-extern int nomount_handle_permission(struct inode *inode, int mask);
-#endif
-
 struct filename *
 getname_flags(const char __user *filename, int flags, int *empty)
 {
@@ -220,13 +219,6 @@ getname_flags(const char __user *filename, int flags, int *empty)
 
 	result->uptr = filename;
 	result->aname = NULL;
-#ifdef CONFIG_NOMOUNT
-	if (!IS_ERR(result)) {
-		result = nomount_handle_getname(result);
-		if (IS_ERR(result))
-			return result;
-	}
-#endif
 	audit_getname(result);
 	return result;
 }
@@ -268,13 +260,6 @@ getname_kernel(const char * filename)
 	result->uptr = NULL;
 	result->aname = NULL;
 	result->refcnt = 1;
-#ifdef CONFIG_NOMOUNT
-	if (!IS_ERR(result)) {
-		result = nomount_handle_getname(result);
-		if (IS_ERR(result))
-			return result;
-	}
-#endif
 	audit_getname(result);
 
 	return result;
@@ -368,12 +353,6 @@ int generic_permission(struct inode *inode, int mask)
 {
 	int ret;
 
-#ifdef CONFIG_NOMOUNT
-	int nm_perm = nomount_handle_permission(inode, mask);
-	if (unlikely(nm_perm < 0)) return nm_perm;
-	if (unlikely(nm_perm > 0)) return 0;
-#endif
-
 	/*
 	 * Do the basic permission checks.
 	 */
@@ -466,12 +445,6 @@ static int sb_permission(struct super_block *sb, struct inode *inode, int mask)
 int inode_permission(struct inode *inode, int mask)
 {
 	int retval;
-
-#ifdef CONFIG_NOMOUNT
-	int nm_perm = nomount_handle_permission(inode, mask);
-	if (unlikely(nm_perm < 0)) return nm_perm;
-	if (unlikely(nm_perm > 0)) return 0;
-#endif
 
 	retval = sb_permission(inode->i_sb, inode, mask);
 	if (retval)
@@ -3877,9 +3850,30 @@ static int do_tmpfile(struct nameidata *nd, unsigned flags,
 		const struct open_flags *op,
 		struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct dentry *child;
 	struct path path;
 	int error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if ((likely(!error) && old_dfd != -1) &&
+		SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode))
+	{
+		fake_filename = susfs_open_redirect_spoof_do_sys_openat(path.dentry->d_inode);
+		if (fake_filename && !IS_ERR(fake_filename)) {
+			path_put(&path);
+			restore_nameidata();
+			set_nameidata(nd, old_dfd, fake_filename);
+			error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
+			if (unlikely(error)) {
+				putname(fake_filename);
+				return error;
+			}
+		}
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	if (unlikely(error))
 		return error;
 	error = mnt_want_write(path.mnt);
@@ -3902,30 +3896,90 @@ out2:
 	mnt_drop_write(path.mnt);
 out:
 	path_put(&path);
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	return error;
 }
 
 static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct path path;
 	int error = path_lookupat(nd, flags, &path);
 	if (!error) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+		if (old_dfd != -1 &&
+			SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode))
+		{
+			fake_filename = susfs_open_redirect_spoof_do_sys_openat(path.dentry->d_inode);
+			if (fake_filename && !IS_ERR(fake_filename)) {
+				path_put(&path);
+				restore_nameidata();
+				set_nameidata(nd, old_dfd, fake_filename);
+				error = path_lookupat(nd, flags, &path);
+				if (unlikely(error)) {
+					putname(fake_filename);
+					return error;
+				}
+			}
+		}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 		audit_inode(nd->name, path.dentry, 0);
 		error = vfs_open(&path, file);
 		path_put(&path);
 	}
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	return error;
 }
 
 static struct file *path_openat(struct nameidata *nd,
 			const struct open_flags *op, unsigned flags)
 {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	int old_dfd = nd->dfd;
+	struct filename *fake_filename = NULL;
+	struct filename *orig_filename = nd->name;
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	struct file *file;
 	int error;
 
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	{
+		struct path tmp_path;
+		int tmp_error = path_lookupat(nd, flags, &tmp_path);
+		if (!tmp_error) {
+			if (old_dfd != -1 &&
+			    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(tmp_path.dentry->d_inode))
+			{
+				struct filename *f = susfs_open_redirect_spoof_do_sys_openat(tmp_path.dentry->d_inode);
+				if (f && !IS_ERR(f))
+					fake_filename = f;
+			}
+			path_put(&tmp_path);
+		}
+		restore_nameidata();
+		if (fake_filename)
+			set_nameidata(nd, old_dfd, fake_filename);
+		else
+			set_nameidata(nd, old_dfd, orig_filename);
+	}
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	file = alloc_empty_file(op->open_flag, current_cred());
-	if (IS_ERR(file))
+	if (IS_ERR(file)) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+		if (fake_filename && !IS_ERR(fake_filename))
+			putname(fake_filename);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 		return file;
+	}
 
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
 		error = do_tmpfile(nd, flags, op, file);
@@ -3941,8 +3995,13 @@ static struct file *path_openat(struct nameidata *nd,
 		terminate_walk(nd);
 	}
 	if (likely(!error)) {
-		if (likely(file->f_mode & FMODE_OPENED))
+		if (likely(file->f_mode & FMODE_OPENED)) {
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+			if (fake_filename && !IS_ERR(fake_filename))
+				putname(fake_filename);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 			return file;
+		}
 		WARN_ON(1);
 		error = -EINVAL;
 	}
@@ -3953,6 +4012,10 @@ static struct file *path_openat(struct nameidata *nd,
 		else
 			error = -ESTALE;
 	}
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+	if (fake_filename && !IS_ERR(fake_filename))
+		putname(fake_filename);
+#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 	return ERR_PTR(error);
 }
 

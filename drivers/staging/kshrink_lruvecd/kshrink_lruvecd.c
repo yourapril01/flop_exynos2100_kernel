@@ -9,6 +9,7 @@
 #include <linux/init.h>
 #include <linux/kshrink_lruvecd.h>
 #include <linux/kthread.h>
+#include <linux/memcontrol.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/page_ext.h>
@@ -19,12 +20,20 @@
 #include <linux/wait.h>
 
 #define KSHRINK_LRUVECD_HIGH		0x1000
-#define KSHRINK_LRUVECD_DELAY_BIT	8
-#define KSHRINK_LRUVECD_SKIP_BIT	9
+#define KSHRINK_LRUVECD_MAX_GROUPS	8
+
+struct kshrink_lruvecd_group {
+	struct list_head pages;
+	struct mem_cgroup *memcg;
+	bool may_writepage;
+	bool may_swap;
+};
 
 static LIST_HEAD(lru_inactive);
 static struct task_struct *shrink_lruvec_tsk;
 static bool kshrink_lruvecd_setup;
+static bool kshrink_lruvecd_enabled = true;
+module_param_named(enabled, kshrink_lruvecd_enabled, bool, 0644);
 static atomic_t shrink_lruvec_runnable = ATOMIC_INIT(0);
 static unsigned long shrink_lruvec_pages;
 static unsigned long shrink_lruvec_pages_max;
@@ -58,7 +67,7 @@ static inline void kshrink_lruvecd_set_delay(struct page *page)
 	if (unlikely(!page_ext))
 		return;
 
-	set_bit(KSHRINK_LRUVECD_DELAY_BIT, &page_ext->flags);
+	set_bit(PAGE_EXT_KSHRINK_LRUVECD_DELAY, &page_ext->flags);
 }
 
 static inline void kshrink_lruvecd_clear_delay(struct page *page)
@@ -68,7 +77,7 @@ static inline void kshrink_lruvecd_clear_delay(struct page *page)
 	if (unlikely(!page_ext))
 		return;
 
-	clear_bit(KSHRINK_LRUVECD_DELAY_BIT, &page_ext->flags);
+	clear_bit(PAGE_EXT_KSHRINK_LRUVECD_DELAY, &page_ext->flags);
 }
 
 static inline bool kshrink_lruvecd_test_clear_delay(struct page *page)
@@ -78,7 +87,8 @@ static inline bool kshrink_lruvecd_test_clear_delay(struct page *page)
 	if (unlikely(!page_ext))
 		return false;
 
-	return test_and_clear_bit(KSHRINK_LRUVECD_DELAY_BIT, &page_ext->flags);
+	return test_and_clear_bit(PAGE_EXT_KSHRINK_LRUVECD_DELAY,
+				 &page_ext->flags);
 }
 
 static inline void kshrink_lruvecd_set_skipped(struct page *page)
@@ -88,7 +98,7 @@ static inline void kshrink_lruvecd_set_skipped(struct page *page)
 	if (unlikely(!page_ext))
 		return;
 
-	set_bit(KSHRINK_LRUVECD_SKIP_BIT, &page_ext->flags);
+	set_bit(PAGE_EXT_KSHRINK_LRUVECD_SKIP, &page_ext->flags);
 }
 
 static inline void kshrink_lruvecd_clear_skipped(struct page *page)
@@ -98,7 +108,7 @@ static inline void kshrink_lruvecd_clear_skipped(struct page *page)
 	if (unlikely(!page_ext))
 		return;
 
-	clear_bit(KSHRINK_LRUVECD_SKIP_BIT, &page_ext->flags);
+	clear_bit(PAGE_EXT_KSHRINK_LRUVECD_SKIP, &page_ext->flags);
 }
 
 static inline bool kshrink_lruvecd_test_clear_skipped(struct page *page)
@@ -108,7 +118,8 @@ static inline bool kshrink_lruvecd_test_clear_skipped(struct page *page)
 	if (unlikely(!page_ext))
 		return false;
 
-	return test_and_clear_bit(KSHRINK_LRUVECD_SKIP_BIT, &page_ext->flags);
+	return test_and_clear_bit(PAGE_EXT_KSHRINK_LRUVECD_SKIP,
+				 &page_ext->flags);
 }
 
 static inline bool kshrink_lruvecd_skipped(struct page *page)
@@ -118,7 +129,54 @@ static inline bool kshrink_lruvecd_skipped(struct page *page)
 	if (unlikely(!page_ext))
 		return false;
 
-	return test_bit(KSHRINK_LRUVECD_SKIP_BIT, &page_ext->flags);
+	return test_bit(PAGE_EXT_KSHRINK_LRUVECD_SKIP, &page_ext->flags);
+}
+
+static inline void kshrink_lruvecd_set_policy(struct page *page,
+					      bool may_writepage, bool may_swap)
+{
+	struct page_ext *page_ext = kshrink_lruvecd_lookup_page_ext(page);
+
+	if (unlikely(!page_ext))
+		return;
+
+	if (may_writepage)
+		set_bit(PAGE_EXT_KSHRINK_LRUVECD_WRITEPAGE, &page_ext->flags);
+	else
+		clear_bit(PAGE_EXT_KSHRINK_LRUVECD_WRITEPAGE, &page_ext->flags);
+
+	if (may_swap)
+		set_bit(PAGE_EXT_KSHRINK_LRUVECD_SWAP, &page_ext->flags);
+	else
+		clear_bit(PAGE_EXT_KSHRINK_LRUVECD_SWAP, &page_ext->flags);
+}
+
+static inline void kshrink_lruvecd_clear_policy(struct page *page)
+{
+	struct page_ext *page_ext = kshrink_lruvecd_lookup_page_ext(page);
+
+	if (unlikely(!page_ext))
+		return;
+
+	clear_bit(PAGE_EXT_KSHRINK_LRUVECD_WRITEPAGE, &page_ext->flags);
+	clear_bit(PAGE_EXT_KSHRINK_LRUVECD_SWAP, &page_ext->flags);
+}
+
+static inline void kshrink_lruvecd_get_policy(struct page *page,
+					      bool *may_writepage,
+					      bool *may_swap)
+{
+	struct page_ext *page_ext = kshrink_lruvecd_lookup_page_ext(page);
+
+	if (unlikely(!page_ext)) {
+		*may_writepage = true;
+		*may_swap = true;
+		return;
+	}
+
+	*may_writepage = test_bit(PAGE_EXT_KSHRINK_LRUVECD_WRITEPAGE,
+				 &page_ext->flags);
+	*may_swap = test_bit(PAGE_EXT_KSHRINK_LRUVECD_SWAP, &page_ext->flags);
 }
 
 static void add_to_lruvecd_inactive_list(struct page *page)
@@ -173,8 +231,11 @@ static void bind_kshrink_lruvecd_cpus(void)
 
 static int shrink_lruvecd(void *unused)
 {
-	LIST_HEAD(tmp_lru_inactive);
+	struct kshrink_lruvecd_group groups[KSHRINK_LRUVECD_MAX_GROUPS];
 	struct page *page, *next;
+	LIST_HEAD(tmp_lru_inactive);
+	LIST_HEAD(leftover);
+	int ngroups, g;
 
 	current->flags |= PF_MEMALLOC | PF_SWAPWRITE | PF_KSWAPD;
 	set_freezable();
@@ -192,19 +253,71 @@ static int shrink_lruvecd(void *unused)
 retry_reclaim:
 		spin_lock_irq(&lru_inactive_lock);
 		if (list_empty(&lru_inactive)) {
-			spin_unlock_irq(&lru_inactive_lock);
+			/* Clear under the lock or a queueing wakeup is lost. */
 			atomic_set(&shrink_lruvec_runnable, 0);
+			spin_unlock_irq(&lru_inactive_lock);
 			continue;
 		}
 
 		list_for_each_entry_safe(page, next, &lru_inactive, lru) {
 			list_move(&page->lru, &tmp_lru_inactive);
 			shrink_lruvec_pages -= hpage_nr_pages(page);
-			shrink_lruvec_handle_pages += hpage_nr_pages(page);
 		}
 		spin_unlock_irq(&lru_inactive_lock);
 
-		reclaim_pages(&tmp_lru_inactive);
+		ngroups = 0;
+		list_for_each_entry_safe(page, next, &tmp_lru_inactive, lru) {
+			struct mem_cgroup *memcg = page_memcg(page);
+			bool may_writepage, may_swap;
+
+			/* Root behaves as global reclaim. */
+			if (memcg && mem_cgroup_is_root(memcg))
+				memcg = NULL;
+
+			kshrink_lruvecd_get_policy(page, &may_writepage,
+						   &may_swap);
+
+			for (g = 0; g < ngroups; g++) {
+				if (groups[g].memcg == memcg &&
+				    groups[g].may_writepage == may_writepage &&
+				    groups[g].may_swap == may_swap)
+					break;
+			}
+
+			if (g == ngroups) {
+				if (ngroups == KSHRINK_LRUVECD_MAX_GROUPS) {
+					list_move(&page->lru, &leftover);
+					continue;
+				}
+				INIT_LIST_HEAD(&groups[ngroups].pages);
+				groups[ngroups].memcg = memcg;
+				groups[ngroups].may_writepage = may_writepage;
+				groups[ngroups].may_swap = may_swap;
+				if (memcg)
+					css_get(&memcg->css);
+				ngroups++;
+			}
+
+			list_move(&page->lru, &groups[g].pages);
+			shrink_lruvec_handle_pages += hpage_nr_pages(page);
+		}
+
+		for (g = 0; g < ngroups; g++) {
+			reclaim_pages_memcg(&groups[g].pages, groups[g].memcg,
+					    groups[g].may_writepage,
+					    groups[g].may_swap);
+			if (groups[g].memcg)
+				mem_cgroup_put(groups[g].memcg);
+		}
+
+		/* Spill excess groups back to the queue head for the next pass. */
+		if (!list_empty(&leftover)) {
+			spin_lock_irq(&lru_inactive_lock);
+			list_for_each_entry_safe(page, next, &leftover, lru)
+				add_to_lruvecd_inactive_list(page);
+			spin_unlock_irq(&lru_inactive_lock);
+		}
+
 		goto retry_reclaim;
 	}
 
@@ -213,9 +326,10 @@ retry_reclaim:
 	return 0;
 }
 
-void kshrink_lruvecd_page_trylock_set(struct page *page)
+void kshrink_lruvecd_page_trylock_set(struct page *page,
+				      bool may_writepage, bool may_swap)
 {
-	if (unlikely(!kshrink_lruvecd_setup))
+	if (unlikely(!kshrink_lruvecd_setup || !kshrink_lruvecd_enabled))
 		return;
 
 	kshrink_lruvecd_clear_skipped(page);
@@ -225,6 +339,7 @@ void kshrink_lruvecd_page_trylock_set(struct page *page)
 		return;
 	}
 
+	kshrink_lruvecd_set_policy(page, may_writepage, may_swap);
 	kshrink_lruvecd_set_delay(page);
 }
 
@@ -232,6 +347,7 @@ void kshrink_lruvecd_page_trylock_clear(struct page *page)
 {
 	kshrink_lruvecd_clear_delay(page);
 	kshrink_lruvecd_clear_skipped(page);
+	kshrink_lruvecd_clear_policy(page);
 }
 
 bool kshrink_lruvecd_do_page_trylock(struct page *page,
@@ -241,7 +357,7 @@ bool kshrink_lruvecd_do_page_trylock(struct page *page,
 	if (got_lock)
 		*got_lock = false;
 
-	if (unlikely(!kshrink_lruvecd_setup))
+	if (unlikely(!kshrink_lruvecd_setup || !kshrink_lruvecd_enabled))
 		return false;
 
 	if (!kshrink_lruvecd_test_clear_delay(page))
@@ -320,10 +436,12 @@ static int kshrink_lruvecd_status_show(struct seq_file *m, void *unused)
 {
 	seq_printf(m,
 		   "kshrink_lruvecd_setup: %s\n"
+		   "kshrink_lruvecd_enabled: %s\n"
 		   "shrink_lruvec_pages: %lu\n"
 		   "shrink_lruvec_handle_pages: %lu\n"
 		   "shrink_lruvec_pages_max: %lu\n\n",
 		   kshrink_lruvecd_setup ? "enable" : "disable",
+		   kshrink_lruvecd_enabled ? "enable" : "disable",
 		   shrink_lruvec_pages,
 		   shrink_lruvec_handle_pages,
 		   shrink_lruvec_pages_max);

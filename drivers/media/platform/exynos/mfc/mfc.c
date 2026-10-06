@@ -12,6 +12,7 @@
 
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/floppykernel.h>
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -815,10 +816,6 @@ static int __mfc_parse_dt(struct device_node *np, struct mfc_dev *mfc)
 			&pdata->drm_switch_predict.support, 2);
 	of_property_read_u32_array(np, "sbwc_enc_src_ctrl",
 			&pdata->sbwc_enc_src_ctrl.support, 2);
-	of_property_read_u32_array(np, "average_qp",
-			&pdata->average_qp.support, 2);
-	of_property_read_u32_array(np, "mv_search_mode",
-			&pdata->mv_search_mode.support, 2);
 	of_property_read_u32_array(np, "enc_idr_flag",
 			&pdata->enc_idr_flag.support, 2);
 	of_property_read_u32_array(np, "min_quality_mode",
@@ -837,8 +834,6 @@ static int __mfc_parse_dt(struct device_node *np, struct mfc_dev *mfc)
 	/* Default 10bit format for decoding and dithering for display */
 	of_property_read_u32(np, "P010_decoding", &pdata->P010_decoding);
 	of_property_read_u32(np, "dithering_enable", &pdata->dithering_enable);
-	of_property_read_u32(np, "stride_align", &pdata->stride_align);
-	of_property_read_u32(np, "stride_type", &pdata->stride_type);
 
 	/* Formats */
 	of_property_read_u32(np, "support_10bit", &pdata->support_10bit);
@@ -848,6 +843,18 @@ static int __mfc_parse_dt(struct device_node *np, struct mfc_dev *mfc)
 	/* SBWC */
 	of_property_read_u32(np, "support_sbwc", &pdata->support_sbwc);
 	of_property_read_u32(np, "support_sbwcl", &pdata->support_sbwcl);
+
+	switch (get_default_sbwc_mode()) {
+	case FK_SBWC_MODE_NO_SBWC:
+		mfc->sbwc_disable = 1;
+		break;
+	case FK_SBWC_MODE_NONE:
+		mfc->sbwc_disable = 1;
+		pdata->support_sbwcl = 0;
+		break;
+	default:
+		break;
+	}
 
 	/* SBWC */
 	of_property_read_u32(np, "sbwc_dec_max_width", &pdata->sbwc_dec_max_width);
@@ -860,12 +867,6 @@ static int __mfc_parse_dt(struct device_node *np, struct mfc_dev *mfc)
 
 	/* HDR10+ num max window */
 	of_property_read_u32(np, "display_err_type", &pdata->display_err_type);
-
-	/* security ctrl */
-	of_property_read_u32(np, "security_ctrl", &pdata->security_ctrl);
-
-	/* Encoder min bit count control */
-	of_property_read_u32(np, "enc_min_bit_cnt", &pdata->enc_min_bit_cnt);
 
 	/* output buffer Q framerate */
 	of_property_read_u32(np, "display_framerate", &pdata->display_framerate);
@@ -1073,6 +1074,78 @@ static int __mfc_tmu_notifier(struct notifier_block *nb, unsigned long state,
 }
 #endif
 
+static ssize_t support_sbwc_show(struct device *device,
+		struct device_attribute *attr, char *buf)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+
+	return sprintf(buf, "%u\n", !dev->sbwc_disable);
+}
+
+static ssize_t support_sbwc_store(struct device *device,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val) || val > 1)
+		return -EINVAL;
+
+	dev->sbwc_disable = !val;
+	mfc_dev_info("support_sbwc set to %u (sbwc_disable=%u)\n", val, dev->sbwc_disable);
+
+	return count;
+}
+static DEVICE_ATTR_RW(support_sbwc);
+
+static ssize_t sbwc_disable_show(struct device *device,
+		struct device_attribute *attr, char *buf)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+
+	return sprintf(buf, "%u\n", dev->sbwc_disable);
+}
+
+static ssize_t sbwc_disable_store(struct device *device,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val) || val > 1)
+		return -EINVAL;
+
+	dev->sbwc_disable = val;
+	mfc_dev_info("sbwc_disable set to %u\n", val);
+
+	return count;
+}
+static DEVICE_ATTR_RW(sbwc_disable);
+
+static ssize_t support_sbwcl_show(struct device *device,
+		struct device_attribute *attr, char *buf)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+
+	return sprintf(buf, "%u\n", dev->pdata->support_sbwcl);
+}
+
+static ssize_t support_sbwcl_store(struct device *device,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mfc_dev *dev = dev_get_drvdata(device);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val) || val > 1)
+		return -EINVAL;
+
+	dev->pdata->support_sbwcl = val;
+	mfc_dev_info("support_sbwcl set to %u\n", val);
+
+	return count;
+}
+static DEVICE_ATTR_RW(support_sbwcl);
+
 /* MFC probe function */
 static int mfc_probe(struct platform_device *pdev)
 {
@@ -1199,6 +1272,13 @@ static int mfc_probe(struct platform_device *pdev)
 
 	mfc_init_debugfs(dev);
 
+	if (device_create_file(dev->device, &dev_attr_support_sbwc))
+		dev_err(&pdev->dev, "failed to create support_sbwc sysfs\n");
+	if (device_create_file(dev->device, &dev_attr_sbwc_disable))
+		dev_err(&pdev->dev, "failed to create sbwc_disable sysfs\n");
+	if (device_create_file(dev->device, &dev_attr_support_sbwcl))
+		dev_err(&pdev->dev, "failed to create support_sbwcl sysfs\n");
+
 #if IS_ENABLED(CONFIG_EXYNOS_THERMAL_V2)
 	dev->tmu_nb.notifier_call = __mfc_tmu_notifier;
 	exynos_tmu_isp_add_notifier(&dev->tmu_nb);
@@ -1243,6 +1323,9 @@ static int mfc_remove(struct platform_device *pdev)
 
 	dev_dbg(&pdev->dev, "%s++\n", __func__);
 	v4l2_info(&dev->v4l2_dev, "Removing %s\n", pdev->name);
+	device_remove_file(dev->device, &dev_attr_support_sbwc);
+	device_remove_file(dev->device, &dev_attr_sbwc_disable);
+	device_remove_file(dev->device, &dev_attr_support_sbwcl);
 	flush_workqueue(dev->butler_wq);
 	destroy_workqueue(dev->butler_wq);
 	flush_workqueue(dev->migration_wq);

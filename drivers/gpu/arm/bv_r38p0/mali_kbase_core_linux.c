@@ -20,6 +20,7 @@
  */
 
 #include <mali_kbase.h>
+#include <linux/trace_events.h>
 #include <mali_kbase_config_defaults.h>
 #include <gpu/mali_kbase_gpu_regmap.h>
 #include <mali_kbase_gator.h>
@@ -5940,22 +5941,36 @@ static struct platform_driver kbase_platform_driver = {
  * The driver will not provide a shortcut to create the Mali platform device
  * anymore when using Device Tree.
  */
-#if IS_ENABLED(CONFIG_OF)
+#if (KERNEL_VERSION(5, 3, 0) > LINUX_VERSION_CODE) && IS_ENABLED(CONFIG_OF)
 module_platform_driver(kbase_platform_driver);
 #else
 
 static int __init kbase_driver_init(void)
 {
 	int ret;
+	extern char mali_selected_version[];
 
+	/* Skip if another version was selected via FK_FEATURE_MALI_VERSION */
+	if (mali_selected_version[0] &&
+	    strcmp(mali_selected_version, "r38p0") != 0) {
+		pr_info("mali_kbase_r38p0: not selected (requested=%s), skipping\n",
+			mali_selected_version);
+		ftrace_remove_module_events(THIS_MODULE);
+		return 0;
+	}
+
+#ifndef CONFIG_OF
 	ret = kbase_platform_register();
 	if (ret)
 		return ret;
-
+#endif
 	ret = platform_driver_register(&kbase_platform_driver);
-
-	if (ret)
+#ifndef CONFIG_OF
+	if (ret) {
 		kbase_platform_unregister();
+		return ret;
+	}
+#endif
 
 	return ret;
 }
@@ -5963,7 +5978,9 @@ static int __init kbase_driver_init(void)
 static void __exit kbase_driver_exit(void)
 {
 	platform_driver_unregister(&kbase_platform_driver);
+#ifndef CONFIG_OF
 	kbase_platform_unregister();
+#endif
 }
 
 module_init(kbase_driver_init);

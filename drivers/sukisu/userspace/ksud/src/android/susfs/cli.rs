@@ -78,7 +78,7 @@ pub enum SuSFSSubCommands {
     /// This command must be completed with <update_sus_kstat> later after the added path is bind mounted or overlayed.
     ///
     /// * Important Notes *
-    /// - Only effective for umounted process with uid >= 10000.
+    /// - Effective for all processes with uid >= 10000
     #[command(name = "add_sus_kstat")]
     AddSusKstat {
         /// Path of file or directory
@@ -90,7 +90,7 @@ pub enum SuSFSSubCommands {
     /// This updates the target ino, but size and blocks are remained the same as current stat.
     ///
     /// * Important Notes *
-    /// - Only effective for umounted process with uid >= 10000.
+    /// - Effective for all processes with uid >= 10000
     #[command(name = "update_sus_kstat")]
     UpdateSusKstat {
         /// Path of file or directory
@@ -102,7 +102,7 @@ pub enum SuSFSSubCommands {
     /// This updates the target ino only, other stat members are remained the same as the original stat.
     ///
     /// * Important Notes *
-    /// - Only effective for umounted process with uid >= 10000.
+    /// - Effective for all processes with uid >= 10000
     #[command(name = "update_sus_kstat_full_clone")]
     UpdateSusKstatFullClone {
         /// Path of file or directory
@@ -112,7 +112,7 @@ pub enum SuSFSSubCommands {
     /// Spoof the kstat of a file or directory by static fields.
     ///
     /// * Important Notes *
-    /// - Only effective for umounted process with uid >= 10000.
+    /// - Effective for all processes with uid >= 10000.
     #[command(name = "add_sus_kstat_statically")]
     AddSusKstatStatically {
         /// Path of file or directory
@@ -220,10 +220,6 @@ pub enum SuSFSSubCommands {
         /// Path to boot image (optional)
         /// Defaults to /dev/block/by-name/[boot_a|boot_b|boot]
         boot_image: Option<String>,
-
-        /// Enable verbose debug logging
-        #[arg(short, long)]
-        verbose: bool,
     },
 }
 
@@ -358,14 +354,11 @@ pub fn run_main(args: SusfsArgs) -> Result<()> {
                 println!("{variant}");
             }
         },
-        SuSFSSubCommands::SlotInfo {
-            boot_image,
-            verbose,
-        } => {
+        SuSFSSubCommands::SlotInfo { boot_image } => {
             if let Some(path) = boot_image {
-                slot_info::analyze_boot_image(&path, verbose)?;
+                slot_info::analyze_boot_image(&path)?;
             } else {
-                slot_info::show_slot_info_json(verbose)?;
+                slot_info::show_slot_info_json()?;
             }
         }
     }

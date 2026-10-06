@@ -188,7 +188,7 @@ int vm_swappiness = 100;
  */
 unsigned long vm_total_pages;
 
-#define DEF_KSWAPD_THREADS_PER_NODE 2
+#define DEF_KSWAPD_THREADS_PER_NODE 1
 static int kswapd_threads = DEF_KSWAPD_THREADS_PER_NODE;
 static bool kswapd_threads_cmdline;
 static int __init kswapd_per_node_setup(char *str)
@@ -212,8 +212,8 @@ __setup("kswapd_per_node=", kswapd_per_node_setup);
  *
  * More than 3 threads causes over-eviction with no scalability gain.
  *
- *   <= 8 GB: 2 threads -- tight memory, minimize reclaim CPU overhead
- *   >  8 GB: 3 threads -- larger LRU lists benefit from parallel scanning
+ *   <= 8 GB: DEF_KSWAPD_THREADS_PER_NODE (1 thread)  -- tight memory, minimize reclaim CPU overhead
+ *   >  8 GB: DEF_KSWAPD_THREADS_PER_NODE + 1 (2 threads) -- larger LRU lists benefit from parallel scanning
  *
  * The kswapd_per_node= cmdline param overrides this for testing.
  */
@@ -227,9 +227,7 @@ static void __init kswapd_threads_init(void)
 	total_ram_mb = memblock_phys_mem_size() >> 20;
 
 	if (total_ram_mb > 8000)
-		kswapd_threads = 3;
-	else
-		kswapd_threads = 2;
+		kswapd_threads = DEF_KSWAPD_THREADS_PER_NODE + 1;
 
 	pr_info("kswapd: %lu MB RAM, using %d threads per node\n",
 		total_ram_mb, kswapd_threads);
@@ -1115,7 +1113,7 @@ static enum page_references page_check_references(struct page *page,
 	unsigned long vm_flags;
 	bool trylock_fail;
 
-	kshrink_lruvecd_page_trylock_set(page);
+	kshrink_lruvecd_page_trylock_set(page, sc->may_writepage, sc->may_swap);
 	referenced_ptes = page_referenced(page, 1, sc->target_mem_cgroup,
 					  &vm_flags);
 	referenced_page = TestClearPageReferenced(page);
@@ -1453,8 +1451,11 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 
 			if (unlikely(PageTransHuge(page)))
 				flags |= TTU_SPLIT_HUGE_PMD;
-			if (!ignore_references)
-				kshrink_lruvecd_page_trylock_set(page);
+			if (!ignore_references) {
+				kshrink_lruvecd_page_trylock_set(page, sc->may_writepage,
+								 sc->may_swap);
+				flags |= TTU_KSHRINK_DEFER;
+			}
 			if (!try_to_unmap(page, flags)) {
 				stat->nr_unmap_fail += nr_pages;
 				if (!was_swapbacked && PageSwapBacked(page))
@@ -1508,6 +1509,8 @@ static unsigned long shrink_page_list(struct list_head *page_list,
 			case PAGE_ACTIVATE:
 				goto activate_locked;
 			case PAGE_SUCCESS:
+				/* the keep jumps below bypass the keep_locked drain */
+				kshrink_lruvecd_page_trylock_clear(page);
 				if (PageWriteback(page))
 					goto keep;
 				if (PageDirty(page))
@@ -1790,6 +1793,9 @@ int __isolate_lru_page_prepare(struct page *page, isolate_mode_t mode)
 	if ((mode & ISOLATE_UNMAPPED) && page_mapped(page))
 		return ret;
 
+	/* Stale defer state from a previous scan must not escape. */
+	kshrink_lruvecd_page_trylock_clear(page);
+
 	return 0;
 }
 
@@ -1999,6 +2005,7 @@ int isolate_lru_page(struct page *page)
 		lruvec = lock_page_lruvec_irq(page);
 		del_page_from_lru_list(page, lruvec);
 		unlock_page_lruvec_irq(lruvec);
+		kshrink_lruvecd_page_trylock_clear(page);
 		ret = 0;
 	}
 
@@ -2293,7 +2300,8 @@ static void shrink_active_list(unsigned long nr_to_scan,
 			}
 		}
 
-		kshrink_lruvecd_page_trylock_set(page);
+		kshrink_lruvecd_page_trylock_set(page, sc->may_writepage,
+						 sc->may_swap);
 		/* Referenced or rmap lock contention: rotate */
 		if (page_referenced(page, 0, sc->target_mem_cgroup,
 				     &vm_flags) != 0) {
@@ -2349,7 +2357,9 @@ static void shrink_active_list(unsigned long nr_to_scan,
 			nr_deactivate, nr_rotated, sc->priority, file);
 }
 
-unsigned long reclaim_pages(struct list_head *page_list)
+static unsigned long __reclaim_pages(struct list_head *page_list,
+				     struct mem_cgroup *memcg,
+				     bool may_writepage, bool may_swap)
 {
 	int nid = -1;
 	unsigned long nr_reclaimed = 0;
@@ -2359,9 +2369,10 @@ unsigned long reclaim_pages(struct list_head *page_list)
 	struct scan_control sc = {
 		.gfp_mask = GFP_KERNEL,
 		.priority = DEF_PRIORITY,
-		.may_writepage = 1,
+		.may_writepage = may_writepage,
 		.may_unmap = 1,
-		.may_swap = 1,
+		.may_swap = may_swap,
+		.target_mem_cgroup = memcg,
 	};
 
 	while (!list_empty(page_list)) {
@@ -2403,6 +2414,18 @@ unsigned long reclaim_pages(struct list_head *page_list)
 	}
 
 	return nr_reclaimed;
+}
+
+unsigned long reclaim_pages(struct list_head *page_list)
+{
+	return __reclaim_pages(page_list, NULL, true, true);
+}
+
+unsigned long reclaim_pages_memcg(struct list_head *page_list,
+				  struct mem_cgroup *memcg,
+				  bool may_writepage, bool may_swap)
+{
+	return __reclaim_pages(page_list, memcg, may_writepage, may_swap);
 }
 
 /*
@@ -2512,9 +2535,53 @@ static bool am_app_launch = false;
 #define MEM_BOOST_MAX_TIME (5 * HZ) /* 5 sec */
 
 #if CONFIG_KSWAPD_CPU
-static int set_kswapd_cpu_affinity_as_config(void);
-// static int set_kswapd_cpu_affinity_as_boost(void);
+static struct cpumask kswapd_cpumask;
+
+#define KSWAPD_CPU_BIG	0xF0
+static struct cpumask kswapd_cpumask_boost;
+
+static void init_kswapd_cpumask(void)
+{
+	int i;
+
+	cpumask_clear(&kswapd_cpumask);
+	for (i = 0; i < nr_cpu_ids; i++) {
+		if (CONFIG_KSWAPD_CPU & (1 << i))
+			cpumask_set_cpu(i, &kswapd_cpumask);
+	}
+
+	cpumask_clear(&kswapd_cpumask_boost);
+	for (i = 0; i < nr_cpu_ids; i++) {
+		if (KSWAPD_CPU_BIG & (1 << i))
+			cpumask_set_cpu(i, &kswapd_cpumask_boost);
+	}
+}
+
+static int set_kswapd_cpu_affinity_as_config(void)
+{
+	int nid, hid;
+
+	for_each_node_state(nid, N_MEMORY) {
+		pg_data_t *pgdat = NODE_DATA(nid);
+		const struct cpumask *mask;
+
+		mask = &kswapd_cpumask;
+
+		if (cpumask_any_and(cpu_online_mask, mask) < nr_cpu_ids) {
+			/* One of our CPUs online: restore mask */
+			for (hid = 0; hid < MAX_KSWAPD_THREADS; hid++) {
+				if (pgdat->mkswapd[hid])
+					set_cpus_allowed_ptr(pgdat->mkswapd[hid], mask);
+			}
+		}
+	}
+	return 0;
+}
 #endif
+
+static DEFINE_MUTEX(kswapd_threads_mutex);
+static int kswapd_per_node_run(int nid);
+static void kswapd_per_node_stop(int nid);
 
 #ifdef CONFIG_SYSFS
 static ssize_t mem_boost_mode_show(struct kobject *kobj,
@@ -2700,9 +2767,111 @@ static ssize_t am_app_launch_store(struct kobject *kobj,
 MEM_BOOST_ATTR(mem_boost_mode);
 MEM_BOOST_ATTR(am_app_launch);
 
+static ssize_t kswapd_threads_show(struct kobject *kobj,
+				   struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", READ_ONCE(kswapd_threads));
+}
+
+static ssize_t kswapd_threads_store(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	int threads, nid, err, old_threads;
+
+	err = kstrtoint(buf, 10, &threads);
+	if (err || threads < 1 || threads > MAX_KSWAPD_THREADS)
+		return -EINVAL;
+
+	mutex_lock(&kswapd_threads_mutex);
+
+	if (threads == kswapd_threads) {
+		mutex_unlock(&kswapd_threads_mutex);
+		return count;
+	}
+
+	old_threads = kswapd_threads;
+
+	/* Stop all currently running kswapd threads */
+	for_each_node_state(nid, N_MEMORY)
+		kswapd_per_node_stop(nid);
+
+	WRITE_ONCE(kswapd_threads, threads);
+
+	/* Restart with the new thread count */
+	for_each_node_state(nid, N_MEMORY) {
+		err = kswapd_per_node_run(nid);
+		if (err)
+			goto rollback;
+	}
+
+	pr_info("kswapd: reconfigured to %d threads per node\n", kswapd_threads);
+
+	mutex_unlock(&kswapd_threads_mutex);
+
+	return count;
+
+rollback:
+	pr_err("kswapd: failed to switch to %d threads per node: %d\n",
+	       threads, err);
+
+	/* Fall back to the previous thread count */
+	for_each_node_state(nid, N_MEMORY)
+		kswapd_per_node_stop(nid);
+
+	WRITE_ONCE(kswapd_threads, old_threads);
+
+	for_each_node_state(nid, N_MEMORY)
+		kswapd_per_node_run(nid);
+
+	mutex_unlock(&kswapd_threads_mutex);
+
+	return err;
+}
+
+static struct kobj_attribute kswapd_threads_attr =
+	__ATTR(kswapd_threads, 0644, kswapd_threads_show, kswapd_threads_store);
+
+#if CONFIG_KSWAPD_CPU
+static ssize_t kswapd_cpu_show(struct kobject *kobj,
+			       struct kobj_attribute *attr, char *buf)
+{
+	return sprintf(buf, "0x%lx\n", *cpumask_bits(&kswapd_cpumask));
+}
+
+static ssize_t kswapd_cpu_store(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	unsigned long mask_val;
+	int err, i;
+
+	err = kstrtoul(buf, 0, &mask_val);
+	if (err || !mask_val)
+		return -EINVAL;
+
+	cpumask_clear(&kswapd_cpumask);
+	for (i = 0; i < nr_cpu_ids; i++) {
+		if (mask_val & (1UL << i))
+			cpumask_set_cpu(i, &kswapd_cpumask);
+	}
+
+	set_kswapd_cpu_affinity_as_config();
+
+	return count;
+}
+
+static struct kobj_attribute kswapd_cpu_attr =
+	__ATTR(kswapd_cpu, 0644, kswapd_cpu_show, kswapd_cpu_store);
+#endif
+
 static struct attribute *vmscan_attrs[] = {
 	&mem_boost_mode_attr.attr,
 	&am_app_launch_attr.attr,
+	&kswapd_threads_attr.attr,
+#if CONFIG_KSWAPD_CPU
+	&kswapd_cpu_attr.attr,
+#endif
 	NULL,
 };
 
@@ -4752,6 +4921,8 @@ static bool isolate_page(struct lruvec *lruvec, struct page *page, struct scan_c
 	success = lru_gen_del_page(lruvec, page, true);
 	VM_WARN_ON_ONCE_PAGE(!success, page);
 
+	kshrink_lruvecd_page_trylock_clear(page);
+
 	return true;
 }
 
@@ -4955,6 +5126,9 @@ static int evict_pages(struct lruvec *lruvec, struct scan_control *sc, int swapp
 retry:
 	reclaimed = shrink_page_list(&list, pgdat, sc, 0, &stat, false);
 	sc->nr_reclaimed += reclaimed;
+
+	/* Harvest before the rejection loop or deferred pages get marked hot. */
+	kshrink_lruvecd_handle_failed_page_trylock(&list);
 
 	list_for_each_entry_safe_reverse(page, next, &list, lru) {
 		if (!page_evictable(page)) {
@@ -7093,7 +7267,12 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 	if (freezing(current) || kthread_should_stop())
 		return;
 
-	prepare_to_wait(&pgdat->kswapd_wait, &wait, TASK_INTERRUPTIBLE);
+	/*
+	 * Exclusive wait so a single wakeup drives one thread; otherwise
+	 * every thread clears the shared request and scans the same zones.
+	 */
+	prepare_to_wait_exclusive(&pgdat->kswapd_wait, &wait,
+				  TASK_INTERRUPTIBLE);
 
 	/*
 	 * Try to sleep for a short interval. Note that kcompactd will only be
@@ -7133,7 +7312,8 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 		}
 
 		finish_wait(&pgdat->kswapd_wait, &wait);
-		prepare_to_wait(&pgdat->kswapd_wait, &wait, TASK_INTERRUPTIBLE);
+		prepare_to_wait_exclusive(&pgdat->kswapd_wait, &wait,
+					  TASK_INTERRUPTIBLE);
 	}
 
 	/*
@@ -7167,66 +7347,7 @@ static void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_o
 	finish_wait(&pgdat->kswapd_wait, &wait);
 }
 
-#if CONFIG_KSWAPD_CPU
-static struct cpumask kswapd_cpumask;
 
-#define KSWAPD_CPU_BIG	0xF0
-static struct cpumask kswapd_cpumask_boost;
-
-static void init_kswapd_cpumask(void)
-{
-	int i;
-
-	cpumask_clear(&kswapd_cpumask);
-	for (i = 0; i < nr_cpu_ids; i++) {
-		if (CONFIG_KSWAPD_CPU & (1 << i))
-			cpumask_set_cpu(i, &kswapd_cpumask);
-	}
-
-	cpumask_clear(&kswapd_cpumask_boost);
-	for (i = 0; i < nr_cpu_ids; i++) {
-		if (KSWAPD_CPU_BIG & (1 << i))
-			cpumask_set_cpu(i, &kswapd_cpumask_boost);
-	}
-}
-
-/* follow like kswapd_cpu_online(unsigned int cpu) */
-static int set_kswapd_cpu_affinity_as_config(void)
-{
-	int nid;
-
-	for_each_node_state(nid, N_MEMORY) {
-		pg_data_t *pgdat = NODE_DATA(nid);
-		const struct cpumask *mask;
-
-		mask = &kswapd_cpumask;
-
-		if (cpumask_any_and(cpu_online_mask, mask) < nr_cpu_ids)
-			/* One of our CPUs online: restore mask */
-			set_cpus_allowed_ptr(pgdat->kswapd, mask);
-	}
-	return 0;
-}
-
-#if 0
-static int set_kswapd_cpu_affinity_as_boost(void)
-{
-	int nid;
-
-	for_each_node_state(nid, N_MEMORY) {
-		pg_data_t *pgdat = NODE_DATA(nid);
-		const struct cpumask *mask;
-
-		mask = &kswapd_cpumask_boost;
-
-		if (cpumask_any_and(cpu_online_mask, mask) < nr_cpu_ids)
-			/* One of our CPUs online: restore mask */
-			set_cpus_allowed_ptr(pgdat->kswapd, mask);
-	}
-	return 0;
-}
-#endif
-#endif
 
 /*
  * The background pageout daemon, started as a kernel thread
@@ -7327,8 +7448,15 @@ static int kswapd_per_node_run(int nid)
 	int ret = 0;
 
 	for (hid = 0; hid < kswapd_threads; ++hid) {
-		pgdat->mkswapd[hid] = kthread_run(kswapd, pgdat, "kswapd%d:%d",
+		if (pgdat->mkswapd[hid])
+			continue;
+
+		if (kswapd_threads == 1)
+			pgdat->mkswapd[hid] = kthread_run(kswapd, pgdat, "kswapd%d", nid);
+		else
+			pgdat->mkswapd[hid] = kthread_run(kswapd, pgdat, "kswapd%d:%d",
 								nid, hid);
+
 		if (IS_ERR(pgdat->mkswapd[hid])) {
 			/* failure at boot is fatal */
 			WARN_ON(system_state < SYSTEM_RUNNING);
@@ -7347,17 +7475,18 @@ static int kswapd_per_node_run(int nid)
 
 static void kswapd_per_node_stop(int nid)
 {
+	pg_data_t *pgdat = NODE_DATA(nid);
 	int hid = 0;
 	struct task_struct *kswapd;
 
-	for (hid = 0; hid < kswapd_threads; hid++) {
-		kswapd = NODE_DATA(nid)->mkswapd[hid];
+	for (hid = 0; hid < MAX_KSWAPD_THREADS; hid++) {
+		kswapd = pgdat->mkswapd[hid];
 		if (kswapd) {
 			kthread_stop(kswapd);
-			NODE_DATA(nid)->mkswapd[hid] = NULL;
+			pgdat->mkswapd[hid] = NULL;
 		}
 	}
-	NODE_DATA(nid)->kswapd = NULL;
+	pgdat->kswapd = NULL;
 }
 
 /*
@@ -7457,7 +7586,7 @@ unsigned long shrink_all_memory(unsigned long nr_to_reclaim)
    restore their cpu bindings. */
 static int kswapd_cpu_online(unsigned int cpu)
 {
-	int nid;
+	int nid, hid;
 
 	for_each_node_state(nid, N_MEMORY) {
 		pg_data_t *pgdat = NODE_DATA(nid);
@@ -7469,9 +7598,13 @@ static int kswapd_cpu_online(unsigned int cpu)
 		mask = cpumask_of_node(pgdat->node_id);
 #endif
 
-		if (cpumask_any_and(cpu_online_mask, mask) < nr_cpu_ids)
+		if (cpumask_any_and(cpu_online_mask, mask) < nr_cpu_ids) {
 			/* One of our CPUs online: restore mask */
-			set_cpus_allowed_ptr(pgdat->kswapd, mask);
+			for (hid = 0; hid < MAX_KSWAPD_THREADS; hid++) {
+				if (pgdat->mkswapd[hid])
+					set_cpus_allowed_ptr(pgdat->mkswapd[hid], mask);
+			}
+		}
 	}
 	return 0;
 }
@@ -7483,23 +7616,11 @@ static int kswapd_cpu_online(unsigned int cpu)
 int kswapd_run(int nid)
 {
 	pg_data_t *pgdat = NODE_DATA(nid);
-	int ret = 0;
 
 	if (pgdat->kswapd)
 		return 0;
 
-	if (kswapd_threads > 1)
-		return kswapd_per_node_run(nid);
-
-	pgdat->kswapd = kthread_run(kswapd, pgdat, "kswapd%d", nid);
-	if (IS_ERR(pgdat->kswapd)) {
-		/* failure at boot is fatal */
-		BUG_ON(system_state < SYSTEM_RUNNING);
-		pr_err("Failed to start kswapd on node %d\n", nid);
-		ret = PTR_ERR(pgdat->kswapd);
-		pgdat->kswapd = NULL;
-	}
-	return ret;
+	return kswapd_per_node_run(nid);
 }
 
 /*
@@ -7508,22 +7629,15 @@ int kswapd_run(int nid)
  */
 void kswapd_stop(int nid)
 {
-	struct task_struct *kswapd = NODE_DATA(nid)->kswapd;
-
-	if (kswapd_threads > 1) {
-		kswapd_per_node_stop(nid);
-		return;
-	}
-
-	if (kswapd) {
-		kthread_stop(kswapd);
-		NODE_DATA(nid)->kswapd = NULL;
-	}
+	kswapd_per_node_stop(nid);
 }
 
 static int __init kswapd_init(void)
 {
 	int nid, ret;
+#ifdef CONFIG_SYSFS
+	struct kobject *sec_mm_kobj;
+#endif
 
 #if CONFIG_KSWAPD_CPU
 	init_kswapd_cpumask();
@@ -7539,6 +7653,18 @@ static int __init kswapd_init(void)
 #ifdef CONFIG_SYSFS
 	if (sysfs_create_group(mm_kobj, &vmscan_attr_group))
 		pr_err("vmscan: register sysfs failed\n");
+
+	sec_mm_kobj = kobject_create_and_add("sec_mm", kernel_kobj);
+	if (sec_mm_kobj) {
+		if (sysfs_create_file(sec_mm_kobj, &mem_boost_mode_attr.attr))
+			pr_err("sec_mm: create mem_boost_mode failed\n");
+		if (sysfs_create_file(sec_mm_kobj, &am_app_launch_attr.attr))
+			pr_err("sec_mm: create am_app_launch failed\n");
+#if CONFIG_KSWAPD_CPU
+		if (sysfs_create_file(sec_mm_kobj, &kswapd_cpu_attr.attr))
+			pr_err("sec_mm: create kswapd_cpu failed\n");
+#endif
+	}
 #endif
 	return 0;
 }

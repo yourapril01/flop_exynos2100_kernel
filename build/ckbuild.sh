@@ -60,6 +60,7 @@ MKDTBOIMG="$(pwd)/build/dtb/mkdtboimg.py"
 
 FK_VER="v1.1.2"
 USE_CCACHE="${USE_CCACHE:-1}"
+USE_THINLTO_CACHE="${USE_THINLTO_CACHE:-0}"
 DO_TAR="${DO_TAR:-1}"
 DO_ZIP="${DO_ZIP:-1}"
 
@@ -117,7 +118,7 @@ elif [ "$DO_SUKI" == "1" ]; then
     FK_TYPE="ReSukiSU-SUSFS"
     FK_TYPE_SHORT="RESKS"
 elif [ "$DO_XXKSU" == "1" ]; then
-    FK_TYPE="XXKSU"
+    FK_TYPE="XXKSU-SUSFS"
     FK_TYPE_SHORT="XXK"
 else
     FK_TYPE="Vanilla"
@@ -148,6 +149,7 @@ echo -e "\n$(log_info "Build info:")
 [ -d "$IMAGES_DIR" ] && rm -rf "$IMAGES_DIR" || true
 mkdir -p "$IMAGES_DIR"
 
+source "$SCRIPTS_DIR/deps.sh"
 source "$SCRIPTS_DIR/tc.sh"
 source "$SCRIPTS_DIR/build.sh"
 source "$SCRIPTS_DIR/post.sh"
@@ -182,8 +184,6 @@ clean() {
 if [ "$DO_CLEAN" = "1" ]; then
     clean
 fi
-
-source "$SCRIPTS_DIR/deps.sh"
 
 prep_build
 build

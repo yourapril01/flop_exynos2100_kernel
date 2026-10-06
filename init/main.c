@@ -198,10 +198,18 @@ static bool mass_storage_hack;
 static char mass_storage_hack_default_arg[] = "mass_storage_hack=0";
 static int selinux_mode = FK_SELINUX_MODE_DEFAULT;
 static char selinux_mode_default_arg[] = "selinux_mode=0";
+static int default_sbwc_mode = FK_SBWC_MODE_FULL;
+static char default_sbwc_mode_default_arg[] = "default_sbwc_mode=0";
 static bool init_protection = true;
 static char init_protection_default_arg[] = "init_protection=1";
 static bool init_debug;
 static char init_debug_default_arg[] = "init_debug=0";
+
+// Initialize to something
+char mali_selected_version[8] = "r38p1";
+EXPORT_SYMBOL(mali_selected_version);
+// Actual consumed value
+static char mali_selected_version_arg[] = "mali.version=r38p1";
 
 #if !defined(CONFIG_DEFAULT_SUPPORT_AOSP)
 static bool aosp_mode;
@@ -270,6 +278,35 @@ bool is_usb_sl_disabled(void)
 }
 EXPORT_SYMBOL(is_usb_sl_disabled);
 #endif
+
+static bool usb_aoffload_disable;
+static char usb_aoffload_disable_default_arg[] = "usb_aoffload_disable=0";
+
+static int __init set_usb_aoffload_disable(char *val)
+{
+	int tmp = usb_aoffload_disable;
+
+	if (get_option(&val, &tmp))
+		usb_aoffload_disable = tmp != 0;
+
+	return 0;
+}
+__setup("usb_aoffload_disable=", set_usb_aoffload_disable);
+
+static void __init apply_usb_aoffload_disable_default(void)
+{
+	char *val;
+
+	val = strchr(usb_aoffload_disable_default_arg, '=');
+	if (val)
+		set_usb_aoffload_disable(val + 1);
+}
+
+bool is_usb_aoffload_disabled(void)
+{
+	return usb_aoffload_disable;
+}
+EXPORT_SYMBOL(is_usb_aoffload_disabled);
 
 static int __init set_uname_bpf_spoof(char *val)
 {
@@ -342,6 +379,36 @@ static void __init apply_selinux_mode_default(void)
 		set_selinux_mode(val + 1);
 }
 
+static int __init set_default_sbwc_mode(char *val)
+{
+	int tmp = default_sbwc_mode;
+
+	if (get_option(&val, &tmp)) {
+		switch (tmp) {
+		case FK_SBWC_MODE_FULL:
+		case FK_SBWC_MODE_NO_SBWC:
+		case FK_SBWC_MODE_NONE:
+			default_sbwc_mode = tmp;
+			break;
+		default:
+			default_sbwc_mode = FK_SBWC_MODE_FULL;
+			break;
+		}
+	}
+
+	return 0;
+}
+__setup("default_sbwc_mode=", set_default_sbwc_mode);
+
+static void __init apply_default_sbwc_mode_default(void)
+{
+	char *val;
+
+	val = strchr(default_sbwc_mode_default_arg, '=');
+	if (val)
+		set_default_sbwc_mode(val + 1);
+}
+
 static int __init set_init_protection(char *val)
 {
 	int tmp = init_protection;
@@ -382,6 +449,12 @@ int get_selinux_mode(void)
 {
 	return selinux_mode;
 }
+
+int get_default_sbwc_mode(void)
+{
+	return default_sbwc_mode;
+}
+EXPORT_SYMBOL(get_default_sbwc_mode);
 
 bool init_protection_enabled(void)
 {
@@ -442,6 +515,15 @@ bool is_dma_buf_env(void)
 	return dma_buf_env;
 }
 EXPORT_SYMBOL(is_dma_buf_env);
+
+static void __init apply_mali_version_default(void)
+{
+	char *val;
+
+	val = strchr(mali_selected_version_arg, '=');
+	if (val)
+		strscpy(mali_selected_version, val + 1, sizeof(mali_selected_version));
+}
 
 static const char *argv_init[MAX_INIT_ARGS+2] = { "init", NULL, };
 const char *envp_init[MAX_INIT_ENVS+2] = { "HOME=/", "TERM=linux", NULL, };
@@ -1156,16 +1238,21 @@ asmlinkage __visible void __init start_kernel(void)
 	apply_uname_bpf_spoof_default();
 	apply_mass_storage_hack_default();
 	apply_selinux_mode_default();
+	apply_default_sbwc_mode_default();
 	apply_init_protection_default();
 	apply_init_debug_default();
 	apply_dma_buf_env_default();
+	apply_mali_version_default();
 #if !defined(CONFIG_DEFAULT_SUPPORT_AOSP)
 	apply_aosp_mode_default();
 	apply_usb_sl_disable_default();
 #endif
+	apply_usb_aoffload_disable_default();
 
 	pr_info("Workaround: aosp_mode=%s\n",
 		is_aosp_mode() ? "enabled" : "disabled");
+	pr_info("Workaround: usb_aoffload_disable=%s\n",
+		is_usb_aoffload_disabled() ? "enabled" : "disabled");
 	pr_info("Workaround: dma_buf_env=%s\n",
 		is_dma_buf_env() ? "enabled" : "disabled");
 
@@ -1190,6 +1277,18 @@ asmlinkage __visible void __init start_kernel(void)
 		break;
 	default:
 		pr_info("Workaround: SelinuxMode Default\n");
+		break;
+	}
+
+	switch (get_default_sbwc_mode()) {
+	case FK_SBWC_MODE_NO_SBWC:
+		pr_info("Workaround: DefaultSbwcMode SBWC disabled, SBWCL enabled\n");
+		break;
+	case FK_SBWC_MODE_NONE:
+		pr_info("Workaround: DefaultSbwcMode SBWC disabled, SBWCL disabled\n");
+		break;
+	default:
+		pr_info("Workaround: DefaultSbwcMode SBWC enabled, SBWCL enabled\n");
 		break;
 	}
 

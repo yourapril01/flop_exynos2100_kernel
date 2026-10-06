@@ -144,7 +144,8 @@ menu "DOS/FAT/NT Filesystems"
 
 source "fs/fat/Kconfig"
 source "fs/sdfat/Kconfig"
-source "fs/ntfs/Kconfig"
+#source "fs/ntfs/Kconfig"
+source "fs/ntfsplus/Kconfig"
 
 endmenu
 endif # BLOCK
@@ -326,12 +327,7 @@ source "fs/nls/Kconfig"
 source "fs/dlm/Kconfig"
 source "fs/unicode/Kconfig"
 
+source "fs/nomount/Kconfig"
 
-config NOMOUNT
-	bool "NoMount Path Redirection Subsystem"
-	default y
-	help
-	  NoMount allows path redirection and virtual file injection
-	  without mounting filesystems. Useful for systemless modifications.
 
 endmenu

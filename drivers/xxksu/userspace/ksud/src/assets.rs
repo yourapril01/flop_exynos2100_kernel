@@ -14,8 +14,8 @@ mod android {
 
     pub fn ensure_binaries(ignore_if_exist: bool) -> anyhow::Result<()> {
         for file in Asset::iter() {
-            if file == "ksuinit" || file.ends_with(".ko") {
-                // don't extract ksuinit and kernel modules
+            if file == "ksuinit" || file == "waitsys" || file.ends_with(".ko") {
+                // don't extract internal executables and kernel modules
                 continue;
             }
             let asset =
@@ -35,14 +35,30 @@ mod android {
 #[cfg(target_os = "android")]
 pub use android::*;
 
-#[cfg(all(target_arch = "arm", target_os = "android"))]
+#[cfg(all(target_arch = "x86_64", target_os = "android"))]
 #[derive(RustEmbed)]
-#[folder = "bin/arm"]
+#[folder = "bin/x86_64"]
 struct Asset;
 
 #[cfg(all(target_arch = "aarch64", target_os = "android"))]
 #[derive(RustEmbed)]
 #[folder = "bin/aarch64"]
+struct Asset;
+
+#[cfg(all(target_arch = "arm", target_os = "android"))]
+#[derive(RustEmbed)]
+#[folder = "bin/arm"]
+struct Asset;
+
+#[cfg(all(target_arch = "riscv64", target_os = "android"))]
+#[derive(RustEmbed)]
+#[folder = "bin/riscv64"]
+struct Asset;
+
+// If not Android, ie. macos, linux, windows, include all architectures.
+#[cfg(not(target_os = "android"))]
+#[derive(RustEmbed)]
+#[folder = "bin"]
 struct Asset;
 
 #[allow(unused)]

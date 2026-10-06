@@ -65,9 +65,9 @@ static int __mfc_info_show(struct seq_file *s, void *unused)
 			continue;
 		}
 		seq_printf(s, ">>> MFC core-%d device information\n", j);
-		seq_printf(s, " [VERSION] H/W: v%x, F/W: %06x(%c, normal: %#x, drm: %#x), DRV: %d\n",
-				core->core_pdata->ip_ver, core->fw.date, core->fw.fimv_info,
-				core->fw.status, core->fw.drm_status, MFC_DRIVER_INFO);
+		seq_printf(s, " [VERSION] H/W: v%x, F/W: %06x(%c), DRV: %d\n",
+				core->core_pdata->ip_ver, core->fw.date,
+				core->fw.fimv_info, MFC_DRIVER_INFO);
 		seq_printf(s, " [PM] power: %d, clock: %d, clk_get %s, QoS level: %d\n",
 				mfc_core_pm_get_pwr_ref_cnt(core),
 				mfc_core_pm_get_clk_ref_cnt(core),
@@ -511,7 +511,7 @@ void mfc_init_debugfs(struct mfc_dev *dev)
 	debugfs->d_logging_option = debugfs_create_u32("logging_option",
 			0644, debugfs->root, &dev->debugfs.logging_option);
 	debugfs->d_sbwc_disable = debugfs_create_u32("sbwc_disable",
-			0644, debugfs->root, &dev->debugfs.sbwc_disable);
+			0644, debugfs->root, &dev->sbwc_disable);
 	debugfs->d_sscd_report = debugfs_create_u32("sscd_report",
 			0644, debugfs->root, &dev->debugfs.sscd_report);
 }

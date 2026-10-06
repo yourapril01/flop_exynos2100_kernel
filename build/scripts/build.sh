@@ -20,6 +20,12 @@ build() {
     export LLVM=1
     export LLVM_IAS=1
     export ARCH=arm64
+    : "${USE_THINLTO_CACHE:=0}"
+    export USE_THINLTO_CACHE
+
+    if [ "$USE_THINLTO_CACHE" = "1" ]; then
+        log_info "ThinLTO cache enabled"
+    fi
 
     rm -rf "$MOD_OUTDIR" 2>/dev/null
 
@@ -27,6 +33,7 @@ build() {
     [ "$DO_KSU" = "1" ] && FRAGMENTS="$FRAGMENTS ksu.config"
     [ "$DO_SUKI" = "1" ] && FRAGMENTS="$FRAGMENTS sukisu.config"
     [ "$DO_XXKSU" = "1" ] && FRAGMENTS="$FRAGMENTS xxksu.config"
+    [ "$DO_NHMOD" = "1" ] && [ "$DO_REGEN" != "1" ] && FRAGMENTS="$FRAGMENTS nethunter.config"
     [ "$DROIDSPACES" = "1" ] && [ "$DO_REGEN" != "1" ] && FRAGMENTS="$FRAGMENTS droidspaces.config"
 
     MAKE_JOBS="-j$(nproc --all)"
@@ -37,6 +44,7 @@ build() {
         LLVM=1
         LLVM_IAS=1
         ARCH=arm64
+        USE_THINLTO_CACHE="$USE_THINLTO_CACHE"
         CROSS_COMPILE="${CCARM64_PREFIX:-aarch64-linux-gnu-}"
         CROSS_COMPILE_ARM32="${CCARM32_PREFIX:-arm-linux-gnueabi-}"
     )
@@ -69,8 +77,8 @@ build() {
     rm -f "$OUT_KERNEL"
 
     if [ "$DO_REGEN" = "1" ]; then
-        if [ "$DO_KSU" = "1" ] || [ "$DO_SUKI" = "1" ] || [ "$DO_XXKSU" = "1" ]; then
-            log_err "Can't regenerate with SU variant argument"
+        if [ "$DO_KSU" = "1" ] || [ "$DO_SUKI" = "1" ] || [ "$DO_XXKSU" = "1" ] || [ "$DO_NHMOD" = "1" ]; then
+            log_err "Can't regenerate with SU variant or NetHunter argument"
             exit 1
         fi
         cp -f "$OUTDIR/.config" "arch/arm64/configs/$DEFCONFIG"

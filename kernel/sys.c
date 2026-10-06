@@ -1271,6 +1271,10 @@ const char *get_bpf_spoof_version(void)
 #endif
 }
 
+#ifdef CONFIG_MALI_VERSION_SELECTOR
+extern char mali_selected_version[8];
+#endif
+
 static int fk_feature_get_state(u32 feature_id, u64 *value, bool *supported)
 {
 	if (!value || !supported)
@@ -1311,11 +1315,24 @@ static int fk_feature_get_state(u32 feature_id, u64 *value, bool *supported)
 	case FK_FEATURE_USB_SL_DISABLE:
 		*value = is_usb_sl_disabled();
 		break;
+	case FK_FEATURE_USB_AOFFLOAD_DISABLE:
+		*value = is_usb_aoffload_disabled();
+		break;
 	case FK_FEATURE_INIT_DEBUG:
 		*value = is_init_debug_enabled();
 		break;
 	case FK_FEATURE_ENABLE_DMA_BUF:
 		*value = is_dma_buf_env();
+		break;
+	case FK_FEATURE_MALI_VERSION:
+#ifdef CONFIG_MALI_VERSION_SELECTOR
+		memcpy(value, mali_selected_version, sizeof(mali_selected_version));
+#else
+		*supported = false;
+#endif
+		break;
+	case FK_FEATURE_DEFAULT_SBWC_MODE:
+		*value = get_default_sbwc_mode();
 		break;
 	default:
 		*supported = false;
@@ -1392,6 +1409,14 @@ static int fk_feature_get_info_by_index(u32 index,
 	}
 	index--;
 	if (index == 0) {
+		info->feature_id = FK_FEATURE_USB_AOFFLOAD_DISABLE;
+		info->flags = PR_FK_FEATURE_SUPPORTED;
+		info->value = is_usb_aoffload_disabled();
+		strscpy(info->name, "usb_aoffload_disable", sizeof(info->name));
+		return 0;
+	}
+	index--;
+	if (index == 0) {
 		info->feature_id = FK_FEATURE_INIT_DEBUG;
 		info->flags = PR_FK_FEATURE_SUPPORTED;
 		info->value = is_init_debug_enabled();
@@ -1404,6 +1429,25 @@ static int fk_feature_get_info_by_index(u32 index,
 		info->flags = PR_FK_FEATURE_SUPPORTED;
 		info->value = is_dma_buf_env();
 		strscpy(info->name, "dma_buf_env", sizeof(info->name));
+		return 0;
+	}
+#ifdef CONFIG_MALI_VERSION_SELECTOR
+	index--;
+	if (index == 0) {
+		info->feature_id = FK_FEATURE_MALI_VERSION;
+		info->flags = PR_FK_FEATURE_SUPPORTED;
+		memcpy(&info->value, mali_selected_version,
+		       sizeof(mali_selected_version));
+		strscpy(info->name, "mali_version", sizeof(info->name));
+		return 0;
+	}
+#endif
+	index--;
+	if (index == 0) {
+		info->feature_id = FK_FEATURE_DEFAULT_SBWC_MODE;
+		info->flags = PR_FK_FEATURE_SUPPORTED;
+		info->value = get_default_sbwc_mode();
+		strscpy(info->name, "default_sbwc_mode", sizeof(info->name));
 		return 0;
 	}
 
@@ -1441,11 +1485,20 @@ static int fk_feature_get_info_by_id(u32 feature_id,
 	case FK_FEATURE_USB_SL_DISABLE:
 		strscpy(info->name, "usb_sl_disable", sizeof(info->name));
 		break;
+	case FK_FEATURE_USB_AOFFLOAD_DISABLE:
+		strscpy(info->name, "usb_aoffload_disable", sizeof(info->name));
+		break;
 	case FK_FEATURE_INIT_DEBUG:
 		strscpy(info->name, "init_debug", sizeof(info->name));
 		break;
 	case FK_FEATURE_ENABLE_DMA_BUF:
 		strscpy(info->name, "dma_buf_env", sizeof(info->name));
+		break;
+	case FK_FEATURE_MALI_VERSION:
+		strscpy(info->name, "mali_version", sizeof(info->name));
+		break;
+	case FK_FEATURE_DEFAULT_SBWC_MODE:
+		strscpy(info->name, "default_sbwc_mode", sizeof(info->name));
 		break;
 	default:
 		return 0;

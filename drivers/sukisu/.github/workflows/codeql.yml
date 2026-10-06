@@ -57,7 +57,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
@@ -74,9 +74,6 @@ jobs:
           build-scan-terms-of-use-agree: "yes"
           build-scan-publish: false
           cache-read-only: true
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 VERSION = 5
 PATCHLEVEL = 4
-SUBLEVEL = 302
+SUBLEVEL = 304
 EXTRAVERSION =
 NAME = Kleptomaniac Octopus
 
@@ -921,7 +921,9 @@ endif
 ifdef CONFIG_LTO_CLANG
 ifdef CONFIG_THINLTO
 CC_FLAGS_LTO_CLANG := -flto=thin -funified-lto -fno-split-lto-unit
+ifeq ($(USE_THINLTO_CACHE),1)
 KBUILD_LDFLAGS	+= --thinlto-cache-dir=.thinlto-cache
+endif
 
 # LLVM tunings
 LD_FLAGS_LTO_CLANG += -mllvm -import-hot-multiplier=2

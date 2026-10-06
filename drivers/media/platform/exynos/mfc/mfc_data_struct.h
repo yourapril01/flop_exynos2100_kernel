@@ -529,7 +529,6 @@ struct mfc_core_lock {
 struct mfc_pm {
 	struct clk	*clock;
 	atomic_t	pwr_ref;
-	atomic_t	protect_ref;
 	struct device	*device;
 	spinlock_t	clklock;
 
@@ -538,21 +537,12 @@ struct mfc_pm {
 	enum mfc_buf_usage_type base_type;
 };
 
-enum mfc_fw_status {
-	MFC_FW_NONE		= 0,
-	MFC_FW_ALLOC		= (1 << 0),	// 0x1
-	MFC_CTX_ALLOC		= (1 << 1),	// 0x2
-	MFC_FW_LOADED		= (1 << 2),	// 0x4
-	MFC_FW_VERIFIED		= (1 << 3),	// 0x8
-	MFC_FW_INITIALIZED	= (1 << 4),	// 0x10
-};
-
 struct mfc_fw {
-	int			date;
-	int			fimv_info;
-	size_t			fw_size;
-	enum mfc_fw_status	status;
-	enum mfc_fw_status	drm_status;
+	int		date;
+	int		fimv_info;
+	size_t		fw_size;
+	int		status;
+	int		drm_status;
 };
 
 struct mfc_ctx_buf_size {
@@ -728,7 +718,6 @@ struct mfc_debugfs {
 	unsigned int feature_option;
 	unsigned int regression_option;
 	unsigned int core_balance;
-	unsigned int sbwc_disable;
 	unsigned int sscd_report;
 };
 
@@ -857,8 +846,6 @@ struct mfc_platdata {
 	/* Default 10bit format for decoding and dithering for display */
 	unsigned int P010_decoding;
 	unsigned int dithering_enable;
-	unsigned int stride_align;
-	unsigned int stride_type;
 	/* Formats */
 	unsigned int support_10bit;
 	unsigned int support_422;
@@ -875,7 +862,6 @@ struct mfc_platdata {
 	unsigned int max_hdr_win;
 	/* error type for sync_point display */
 	unsigned int display_err_type;
-	unsigned int security_ctrl;
 	/* output buffer Q framerate */
 	unsigned int display_framerate;
 	/* NAL-Q size */
@@ -897,8 +883,6 @@ struct mfc_platdata {
 	struct mfc_feature wait_nalq_status;
 	struct mfc_feature drm_switch_predict;
 	struct mfc_feature sbwc_enc_src_ctrl;
-	struct mfc_feature average_qp;
-	struct mfc_feature mv_search_mode;
 	struct mfc_feature enc_idr_flag;
 	struct mfc_feature min_quality_mode;
 	struct mfc_feature enc_ts_delta;
@@ -911,9 +895,6 @@ struct mfc_platdata {
 	unsigned int enc_param_num;
 	unsigned int enc_param_addr[MFC_MAX_DEFAULT_PARAM];
 	unsigned int enc_param_val[MFC_MAX_DEFAULT_PARAM];
-
-	/* Encoder min bit count control */
-	unsigned int enc_min_bit_cnt;
 
 	struct mfc_bw_info mfc_bw_info;
 	struct mfc_bw_info mfc_bw_info_sbwc;
@@ -1294,6 +1275,7 @@ struct mfc_dev {
 	/* Debugfs and dump */
 	struct mfc_debugfs debugfs;
 	struct mfc_dump_ops *dump_ops;
+	unsigned int sbwc_disable;
 
 	/* Instance migration worker */
 	struct workqueue_struct *migration_wq;
@@ -1782,12 +1764,6 @@ struct mfc_enc_params {
 	u32 chroma_qp_offset_cb; /* H.264, HEVC */
 	u32 chroma_qp_offset_cr; /* H.264, HEVC */
 
-	u32 mv_search_mode;
-	u32 mv_hor_pos_l0;
-	u32 mv_hor_pos_l1;
-	u32 mv_ver_pos_l0;
-	u32 mv_ver_pos_l1;
-
 	union {
 		struct mfc_h264_enc_params h264;
 		struct mfc_mpeg4_enc_params mpeg4;
@@ -2092,7 +2068,8 @@ struct mfc_dec {
 	int crc_luma1;
 	int crc_chroma1;
 
-	unsigned int consumed;
+	unsigned long consumed;
+	unsigned long remained_size;
 	dma_addr_t y_addr_for_pb;
 
 	int sei_parse;
@@ -2127,7 +2104,7 @@ struct mfc_dec {
 	unsigned int decoding_order;
 	unsigned int frame_display_delay;
 
-	struct mfc_fmt *uncomp_fmt;
+	unsigned int uncomp_pixfmt;
 
 	/* for Dynamic DPB */
 	struct dpb_table dpb[MFC_MAX_DPBS];
@@ -2186,7 +2163,6 @@ struct mfc_enc {
 
 	int stored_tag;
 	int roi_index;
-	int is_cbr_fix;
 	struct mfc_special_buf roi_buf[MFC_MAX_EXTRA_BUF];
 	struct mfc_enc_roi_info roi_info[MFC_MAX_EXTRA_BUF];
 
@@ -2242,12 +2218,12 @@ struct mfc_ctx {
 	int mb_width;
 	int mb_height;
 	int dpb_count;
+	int buf_stride;
 	int rgb_bpp;
 
 	int min_dpb_size[3];
 	int min_dpb_size_2bits[3];
 
-	int bytesperline[3];
 	struct mfc_raw_info raw_buf;
 
 	enum mfc_queue_state capture_state;

@@ -23,8 +23,6 @@ else
 obj-y +=	no-block.o
 endif
 
-obj-$(CONFIG_NOMOUNT) += nomount.o
-
 obj-$(CONFIG_PROC_FS) += proc_namespace.o
 obj-$(CONFIG_PROC_DLOG) += dlog_hook.o
 
@@ -104,7 +102,8 @@ obj-$(CONFIG_SYSV_FS)		+= sysv/
 obj-$(CONFIG_CIFS)		+= cifs/
 obj-$(CONFIG_SMB_SERVER)	+= ksmbd/
 obj-$(CONFIG_HPFS_FS)		+= hpfs/
-obj-$(CONFIG_NTFS_FS)		+= ntfs/
+#obj-$(CONFIG_NTFS_FS)		+= ntfs/
+obj-$(CONFIG_NTFS_FS)		+= ntfsplus/
 obj-$(CONFIG_UFS_FS)		+= ufs/
 obj-$(CONFIG_EFS_FS)		+= efs/
 obj-$(CONFIG_JFFS2_FS)		+= jffs2/
@@ -140,6 +139,8 @@ obj-$(CONFIG_CEPH_FS)		+= ceph/
 obj-$(CONFIG_PSTORE)		+= pstore/
 obj-$(CONFIG_EFIVAR_FS)		+= efivarfs/
 obj-$(CONFIG_EROFS_FS)		+= erofs/
+
+obj-$(CONFIG_NOMOUNT) += nomount/
 
 ifdef CONFIG_SEC_KUNIT
 endif

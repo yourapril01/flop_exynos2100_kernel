@@ -2189,7 +2189,7 @@ static noinline int copy_to_sk(struct btrfs_path *path,
 		 * problem. Otherwise we'll fault and then copy the buffer in
 		 * properly this next time through
 		 */
-		if (probe_user_write(ubuf + *sk_offset, &sh, sizeof(sh))) {
+		if (copy_to_user_nofault(ubuf + *sk_offset, &sh, sizeof(sh))) {
 			ret = 0;
 			goto out;
 		}
@@ -2581,10 +2581,8 @@ static int btrfs_search_path_in_tree_user(struct inode *inode,
 			}
 			ret = inode_permission(temp_inode, MAY_READ | MAY_EXEC);
 			iput(temp_inode);
-			if (ret) {
-				ret = -EACCES;
+			if (ret)
 				goto out;
-			}
 
 			if (key.offset == upper_limit.objectid)
 				break;

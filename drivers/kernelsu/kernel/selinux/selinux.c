@@ -133,6 +133,13 @@ struct lsm_context {
     u32 len;
 };
 
+#ifndef CONFIG_ANDROID
+int ksu_security_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid)
+{
+	return security_secctx_to_secid(secdata, seclen, secid);
+}
+#endif
+
 static int __security_secid_to_secctx(u32 secid, struct lsm_context *cp)
 {
     return security_secid_to_secctx(secid, &cp->context, &cp->len);
@@ -267,17 +274,19 @@ void escape_to_root_for_adb_root(void)
 #ifdef CONFIG_KSU_SUSFS
 #define KERNEL_INIT_DOMAIN "u:r:init:s0"
 #define KERNEL_ZYGOTE_DOMAIN "u:r:zygote:s0"
+#define KERNEL_ZYGOTE_NEXT_DOMAIN "u:r:zygote_next:s0"
 #define KERNEL_PRIV_APP_DOMAIN "u:r:priv_app:s0:c512,c768"
 
-u32 susfs_ksu_sid = 0;
-u32 susfs_init_sid = 0;
-u32 susfs_zygote_sid = 0;
-u32 susfs_priv_app_sid = 0;
+u32 susfs_ksu_sid __read_mostly = 0;
+u32 susfs_init_sid __read_mostly = 0;
+u32 susfs_zygote_sid __read_mostly = 0;
+u32 susfs_zygote_next_sid __read_mostly = 0;
+u32 susfs_priv_app_sid __read_mostly = 0;
 
 static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
 {
     int err;
-    
+
     if (!secctx_name || !out_sid) {
         pr_err("secctx_name || out_sid is NULL\n");
         return;
@@ -292,14 +301,15 @@ static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
     pr_info("sid '%u' is set for secctx_name '%s'\n", *out_sid, secctx_name);
 }
 
-bool susfs_is_sid_equal(const struct cred *cred, u32 sid2) {
+bool susfs_is_sid_equal(const struct cred *cred, u32 sid2)
+{
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
     const struct task_security_struct *tsec = selinux_cred(cred);
 #else
     const struct cred_security_struct *tsec = selinux_cred(cred);
 #endif
 
-    if (!tsec) {
+    if (!tsec || !sid2) {
         return false;
     }
     return tsec->sid == sid2;
@@ -309,7 +319,7 @@ u32 susfs_get_sid_from_name(const char *secctx_name)
 {
     u32 out_sid = 0;
     int err;
-    
+
     if (!secctx_name) {
         pr_err("secctx_name is NULL\n");
         return 0;
@@ -323,39 +333,37 @@ u32 susfs_get_sid_from_name(const char *secctx_name)
     return out_sid;
 }
 
-u32 susfs_get_current_sid(void) {
+u32 susfs_get_current_sid(void)
+{
     return current_sid();
 }
 
-void susfs_set_zygote_sid(void)
+bool susfs_is_current_zygote_domain(void)
 {
-    susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
-}
-
-bool susfs_is_current_zygote_domain(void) {
     return unlikely(current_sid() == susfs_zygote_sid);
 }
 
-void susfs_set_ksu_sid(void)
+bool susfs_is_current_zygote_next_domain(void)
 {
-    susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
+    return unlikely(current_sid() == susfs_zygote_next_sid);
 }
 
-bool susfs_is_current_ksu_domain(void) {
+bool susfs_is_current_ksu_domain(void)
+{
     return unlikely(current_sid() == susfs_ksu_sid);
 }
 
-void susfs_set_init_sid(void)
+bool susfs_is_current_init_domain(void)
 {
-    susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
-}
-
-bool susfs_is_current_init_domain(void) {
     return unlikely(current_sid() == susfs_init_sid);
 }
 
-void susfs_set_priv_app_sid(void)
+void susfs_set_batch_sid(void)
 {
+    susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
+    susfs_set_sid(KERNEL_ZYGOTE_NEXT_DOMAIN, &susfs_zygote_next_sid);
+    susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
+    susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
     susfs_set_sid(KERNEL_PRIV_APP_DOMAIN, &susfs_priv_app_sid);
 }
 #endif // #ifdef CONFIG_KSU_SUSFS
