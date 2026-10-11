@@ -5892,8 +5892,8 @@
 
 						LDO27 {
 							regulator-name = "vdd_ldo27";
-							regulator-min-microvolt = <0x186a00>;
-							regulator-max-microvolt = <0x1dc130>;
+							regulator-min-microvolt = <0x17a6b0>;
+							regulator-max-microvolt = <0x1d4c00>;
 							regulator-always-on;
 							regulator-ramp-delay = <0x2ee0>;
 							regulator-initial-mode = <0x03>;
@@ -6192,8 +6192,8 @@
 
 						LDO21 {
 							regulator-name = "vdd_ldo21s";
-							regulator-min-microvolt = <0x1b7740>;
-							regulator-max-microvolt = <0x337f98>;
+							regulator-min-microvolt = <0x1ab3f0>;
+							regulator-max-microvolt = <0x330a68>;
 							regulator-always-on;
 							regulator-ramp-delay = <0x2ee0>;
 							regulator-initial-mode = <0x03>;
@@ -7656,8 +7656,8 @@
 
 					s2dos05-buck1 {
 						regulator-name = "vdd1";
-						regulator-min-microvolt = <0xcf850>;
-						regulator-max-microvolt = <0x200b20>;
+						regulator-min-microvolt = <0xc350>;
+						regulator-max-microvolt = <0x1f47d0>;
 						regulator-always-on;
 						regulator-boot-on;
 						phandle = <0x87>;
@@ -7665,8 +7665,8 @@
 
 					s2dos05-ldo1 {
 						regulator-name = "vdd2";
-						regulator-min-microvolt = <0x16e360>;
-						regulator-max-microvolt = <0x1e8480>;
+						regulator-min-microvolt = <0x162010>;
+						regulator-max-microvolt = <0x1e0f50>;
 						regulator-always-on;
 						regulator-boot-on;
 						phandle = <0x88>;
@@ -7674,8 +7674,8 @@
 
 					s2dos05-ldo2 {
 						regulator-name = "vdd3";
-						regulator-min-microvolt = <0x16e360>;
-						regulator-max-microvolt = <0x1e8480>;
+						regulator-min-microvolt = <0x162010>;
+						regulator-max-microvolt = <0x1e0f50>;
 						regulator-always-on;
 						regulator-boot-on;
 						phandle = <0x89>;
@@ -7683,8 +7683,8 @@
 
 					s2dos05-ldo3 {
 						regulator-name = "vdd4";
-						regulator-min-microvolt = <0x2932e0>;
-						regulator-max-microvolt = <0x399a18>;
+						regulator-min-microvolt = <0x286f90>;
+						regulator-max-microvolt = <0x3924e8>;
 						regulator-always-on;
 						regulator-boot-on;
 						phandle = <0x8a>;
@@ -7692,8 +7692,8 @@
 
 					s2dos05-ldo4 {
 						regulator-name = "vdd5";
-						regulator-min-microvolt = <0x2932e0>;
-						regulator-max-microvolt = <0x399a18>;
+						regulator-min-microvolt = <0x286f90>;
+						regulator-max-microvolt = <0x3924e8>;
 						regulator-always-on;
 						regulator-boot-on;
 						phandle = <0x8b>;

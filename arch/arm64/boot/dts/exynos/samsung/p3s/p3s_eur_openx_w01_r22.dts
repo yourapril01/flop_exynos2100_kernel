@@ -1168,8 +1168,8 @@
 
 					LDO27 {
 						regulator-name = "vdd_ldo27";
-						regulator-min-microvolt = <0x1b7740>;
-						regulator-max-microvolt = <0x1b7740>;
+						regulator-min-microvolt = <0x17a6b0>;
+						regulator-max-microvolt = <0x1d4c00>;
 						regulator-ramp-delay = <0x2ee0>;
 						regulator-initial-mode = <0x03>;
 						phandle = <0x30>;
